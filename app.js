@@ -2415,10 +2415,16 @@ function renderGuidedOverview() {
     <div class="gfs-header">
       ${gfsHeaderTopHTML(isLive ? "Scoring" : "Final overview", false, false)}
       <h2 class="gfs-mission-name">${esc(run.label)}</h2>
-      <div class="gfs-timer" id="gfs-overview-total">${runTotal(run, state.missions)} / ${runMaxPoints(state.missions)}</div>
-      <div class="gfs-timer-label">${isLive
-        ? `<span id="grn-timer">${liveTimerHTML()}</span> remaining &middot; fill in scores below as you go`
-        : `${fmtDuration(run.totalTimeMs)} total time &middot; review below or save now`}</div>
+      ${isLive ? `
+        <div class="gfs-timer-row" style="justify-content:center; gap:24px;">
+          <div class="gfs-timer" id="grn-timer">${liveTimerHTML()}</div>
+          <div class="gfs-timer" id="gfs-overview-total">${runTotal(run, state.missions)} / ${runMaxPoints(state.missions)}</div>
+        </div>
+        <div class="gfs-timer-label">time left &middot; score &middot; fill in scores below as you go</div>
+      ` : `
+        <div class="gfs-timer" id="gfs-overview-total">${runTotal(run, state.missions)} / ${runMaxPoints(state.missions)}</div>
+        <div class="gfs-timer-label">${fmtDuration(run.totalTimeMs)} total time &middot; review below or save now</div>
+      `}
       <button class="btn btn-primary btn-full" id="grn-save-top" type="button" style="margin-top:12px;">&#10003; Save &amp; Finish</button>
     </div>
     <div class="gfs-body" id="gfs-overview-body"></div>
@@ -3244,9 +3250,9 @@ document.getElementById("btn-export-backup").addEventListener("click", async () 
 
 document.getElementById("btn-import-backup").addEventListener("click", () => document.getElementById("file-import-backup").click());
 document.getElementById("btn-reset-db").addEventListener("click", () => {
-  if (confirm("This permanently erases every attachment, entry, mission, and run stored on this device. This can't be undone. Continue?")) {
+  confirmDestructive("This permanently erases every attachment, entry, mission, and run stored on this device. This can't be undone.", () => {
     resetLocalDatabase();
-  }
+  });
 });
 document.getElementById("file-import-backup").addEventListener("change", async (e) => {
   const file = e.target.files[0];

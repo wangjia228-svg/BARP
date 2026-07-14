@@ -1,5 +1,5 @@
 // Bump this when you change any cached file so phones pick up the update.
-const CACHE_NAME = "barp-v28";
+const CACHE_NAME = "barp-v29";
 const ASSETS = [
   "./",
   "./index.html",
@@ -7,12 +7,21 @@ const ASSETS = [
   "./app.js",
   "./manifest.json",
   "./icons/icon-192.png",
-  "./icons/icon-512.png"
+  "./icons/icon-512.png",
+  "./sounds/start-horn.mp3",
+  "./sounds/thirty-seconds.mp3",
+  "./sounds/buzzer.mp3"
 ];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => cache.addAll(ASSETS)).then(() => self.skipWaiting())
+    caches.open(CACHE_NAME).then((cache) =>
+      // Sound files aren't guaranteed to exist (copyrighted FLL audio isn't
+      // shipped by default) — add them individually so a missing file
+      // doesn't fail the whole install and take the rest of the app offline
+      // with it.
+      Promise.all(ASSETS.map((url) => cache.add(url).catch(() => {})))
+    ).then(() => self.skipWaiting())
   );
 });
 
@@ -24,16 +33,14 @@ self.addEventListener("activate", (event) => {
   );
 });
 
-// Cache-first for app shell, network-first fallback for everything else.
+// Cache-first for everything, network fallback if it's not cached yet. Sound
+// files are fetched via the Web Audio API now (fetch + decodeAudioData), not
+// streamed through an <audio> element, so there's no byte-range/seeking
+// concern anymore — they're safe to cache like any other static asset, and
+// doing so means the buzzer/horn load instantly from disk instead of
+// waiting on the network (especially useful on flaky venue wifi).
 self.addEventListener("fetch", (event) => {
   if (event.request.method !== "GET") return;
-  // Audio elements frequently issue byte-range requests (Range header) to
-  // support seeking. A simple full-response cache like this one doesn't
-  // return proper 206 Partial Content semantics for those, which can make
-  // the browser reject playback entirely ("no supported sources") even
-  // though the file itself is fine. Let sound files go straight to the
-  // network/browser cache, untouched by this service worker.
-  if (event.request.url.includes("/sounds/")) return;
   event.respondWith(
     caches.match(event.request).then((cached) => {
       if (cached) return cached;
