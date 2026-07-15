@@ -336,23 +336,6 @@ modalBackdrop.addEventListener("click", (e) => {
   if (e.target === modalBackdrop && !state.guidedRun) closeModal();
 });
 
-function confirmDestructive(message, onConfirm) {
-  openModal(`
-    <h2>Are you sure?</h2>
-    <p class="empty-sub">${message}</p>
-    <div class="field"><label>Type DELETE to confirm</label><input class="text-input" id="cd-input" placeholder="DELETE" autocomplete="off"></div>
-    <div class="modal-actions">
-      <button class="btn btn-ghost" id="m-cancel" type="button">Cancel</button>
-      <button class="btn btn-danger" id="cd-confirm" type="button" disabled>Delete</button>
-    </div>
-  `);
-  document.getElementById("m-cancel").addEventListener("click", closeModal);
-  const input = document.getElementById("cd-input");
-  const btn = document.getElementById("cd-confirm");
-  input.addEventListener("input", () => { btn.disabled = input.value.trim().toUpperCase() !== "DELETE"; });
-  btn.addEventListener("click", () => { closeModal(); onConfirm(); });
-}
-
 let undoToastTimer = null;
 function showUndoToast(message, onUndo) {
   let toast = document.getElementById("undo-toast");
@@ -363,12 +346,16 @@ function showUndoToast(message, onUndo) {
     document.body.appendChild(toast);
   }
   clearTimeout(undoToastTimer);
-  toast.innerHTML = `<span>${esc(message)}</span><button type="button" id="undo-toast-btn">Undo</button>`;
+  toast.innerHTML = `<span>${esc(message)}</span><button type="button" id="undo-toast-btn">Undo</button><button type="button" class="toast-close-btn" id="undo-toast-close" title="Dismiss">&#10005;</button>`;
   toast.hidden = false;
   document.getElementById("undo-toast-btn").addEventListener("click", () => {
     toast.hidden = true;
     clearTimeout(undoToastTimer);
     onUndo();
+  });
+  document.getElementById("undo-toast-close").addEventListener("click", () => {
+    toast.hidden = true;
+    clearTimeout(undoToastTimer);
   });
   undoToastTimer = setTimeout(() => { toast.hidden = true; }, 8000);
 }
@@ -381,8 +368,12 @@ function showSimpleToast(message) {
     document.body.appendChild(toast);
   }
   clearTimeout(toast._timer);
-  toast.innerHTML = `<span>${esc(message)}</span>`;
+  toast.innerHTML = `<span>${esc(message)}</span><button type="button" class="toast-close-btn" id="simple-toast-close" title="Dismiss">&#10005;</button>`;
   toast.hidden = false;
+  document.getElementById("simple-toast-close").addEventListener("click", () => {
+    toast.hidden = true;
+    clearTimeout(toast._timer);
+  });
   toast._timer = setTimeout(() => { toast.hidden = true; }, 3000);
 }
 
@@ -638,17 +629,16 @@ async function renderEntryList() {
     const card = document.createElement("div");
     card.className = "entry-card";
     card.innerHTML = entryCardHTML(entry, showTag ? (att ? `#${att.number} ${att.name}` : "deleted attachment") : null);
-    card.querySelector(".btn-icon").addEventListener("click", () => {
-      confirmDestructive("This removes the entry from the log. You can restore it any time from Settings → Recently Deleted.", async () => {
-        entry.deleted = true;
-        entry.deletedAt = Date.now();
-        await dbPut("entries", entry);
-        await renderEntryList();
-        await renderIterationTotal();
-        renderAttachmentsSetup();
-        syncToTeamDrive();
-        showUndoToast("Entry deleted.", () => restoreDeletedEntry(entry));
-      });
+    card.querySelector(".btn-icon").addEventListener("click", async () => {
+      if (!confirm("This removes the entry from the log. You can restore it any time from Settings → Recently Deleted.")) return;
+      entry.deleted = true;
+      entry.deletedAt = Date.now();
+      await dbPut("entries", entry);
+      await renderEntryList();
+      await renderIterationTotal();
+      renderAttachmentsSetup();
+      syncToTeamDrive();
+      showUndoToast("Entry deleted.", () => restoreDeletedEntry(entry));
     });
     card.querySelectorAll(".entry-showmore-btn").forEach((btn) => {
       btn.addEventListener("click", () => {
@@ -687,20 +677,19 @@ function renderAttachmentsSetup() {
           <button class="btn-icon" data-act="del">&#128465;&#65039;</button>
         `;
         row.querySelector('[data-act="edit"]').addEventListener("click", () => openAttachmentModal(att));
-        row.querySelector('[data-act="del"]').addEventListener("click", () => {
-          confirmDestructive(`Delete "${att.name}" and everything logged under it?`, async () => {
-            const entries = await dbGetByIndex("entries", "byAttachment", att.id);
-            const now = Date.now();
-            for (const en of entries) { if (!en.deleted) { en.deleted = true; en.deletedAt = now; en.deletedWithAttachmentId = att.id; await dbPut("entries", en); } }
-            att.deleted = true;
-            att.deletedAt = now;
-            await dbPut("attachments", att);
-            await renumberAttachments();
-            await loadAttachments();
-            syncToTeamDrive();
-            showUndoToast(`Deleted "${att.name}".`, async () => {
-              await restoreDeletedAttachment(att.id);
-            });
+        row.querySelector('[data-act="del"]').addEventListener("click", async () => {
+          if (!confirm(`Delete "${att.name}" and everything logged under it?`)) return;
+          const entries = await dbGetByIndex("entries", "byAttachment", att.id);
+          const now = Date.now();
+          for (const en of entries) { if (!en.deleted) { en.deleted = true; en.deletedAt = now; en.deletedWithAttachmentId = att.id; await dbPut("entries", en); } }
+          att.deleted = true;
+          att.deletedAt = now;
+          await dbPut("attachments", att);
+          await renumberAttachments();
+          await loadAttachments();
+          syncToTeamDrive();
+          showUndoToast(`Deleted "${att.name}".`, async () => {
+            await restoreDeletedAttachment(att.id);
           });
         });
         list.appendChild(row);
@@ -1440,18 +1429,17 @@ function renderRunGroups() {
       const editBtn = wrap.querySelector('[data-act="edit"]');
       if (editBtn) editBtn.addEventListener("click", () => openRunGroupModal(g));
       const delBtn = wrap.querySelector('[data-act="del"]');
-      if (delBtn) delBtn.addEventListener("click", () => {
-        confirmDestructive(`Delete "${g.name}"? Its missions move to "Unassigned" rather than being deleted.`, async () => {
-          g.deleted = true;
-          g.deletedAt = Date.now();
-          await dbPut("runGroups", g);
-          await loadRunGroups();
-          await loadMissions();
-          renderRunGroups();
-          syncToTeamDrive();
-          showUndoToast(`Deleted "${g.name}".`, async () => {
-            await restoreDeletedRunGroup(g.id);
-          });
+      if (delBtn) delBtn.addEventListener("click", async () => {
+        if (!confirm(`Delete "${g.name}"? Its missions move to "Unassigned" rather than being deleted.`)) return;
+        g.deleted = true;
+        g.deletedAt = Date.now();
+        await dbPut("runGroups", g);
+        await loadRunGroups();
+        await loadMissions();
+        renderRunGroups();
+        syncToTeamDrive();
+        showUndoToast(`Deleted "${g.name}".`, async () => {
+          await restoreDeletedRunGroup(g.id);
         });
       });
       attachRowDrag(wrap, list, undefined, true);
@@ -1524,17 +1512,16 @@ function renderOrphanMissions(container, orphans) {
     });
     row.querySelector('[data-act="add-task"]').addEventListener("click", () => openTaskModal(m, null));
     row.querySelector('[data-act="edit"]').addEventListener("click", () => openMissionNameModal(m, null));
-    row.querySelector('[data-act="del"]').addEventListener("click", () => {
-      confirmDestructive(`Delete mission "${m.name}" and all its tasks?`, async () => {
-        m.deleted = true;
-        m.deletedAt = Date.now();
-        await dbPut("missions", m);
-        await loadMissions();
-        renderRunGroups();
-        syncToTeamDrive();
-        showUndoToast(`Deleted mission "${m.name}".`, async () => {
-          await restoreDeletedMission(m.id);
-        });
+    row.querySelector('[data-act="del"]').addEventListener("click", async () => {
+      if (!confirm(`Delete mission "${m.name}" and all its tasks?`)) return;
+      m.deleted = true;
+      m.deletedAt = Date.now();
+      await dbPut("missions", m);
+      await loadMissions();
+      renderRunGroups();
+      syncToTeamDrive();
+      showUndoToast(`Deleted mission "${m.name}".`, async () => {
+        await restoreDeletedMission(m.id);
       });
     });
     if (expanded) renderTaskList(row.querySelector(".task-list"), m);
@@ -1602,17 +1589,16 @@ function renderMissionsForGroup(container, group, missionRows) {
       const editBtn = row.querySelector('[data-act="edit"]');
       if (editBtn) editBtn.addEventListener("click", () => openMissionNameModal(m, group));
       const delBtn = row.querySelector('[data-act="del"]');
-      if (delBtn) delBtn.addEventListener("click", () => {
-        confirmDestructive(`Delete mission "${m.name}" and all its tasks?`, async () => {
-          m.deleted = true;
-          m.deletedAt = Date.now();
-          await dbPut("missions", m);
-          await loadMissions();
-          renderRunGroups();
-          syncToTeamDrive();
-          showUndoToast(`Deleted mission "${m.name}".`, async () => {
-            await restoreDeletedMission(m.id);
-          });
+      if (delBtn) delBtn.addEventListener("click", async () => {
+        if (!confirm(`Delete mission "${m.name}" and all its tasks?`)) return;
+        m.deleted = true;
+        m.deletedAt = Date.now();
+        await dbPut("missions", m);
+        await loadMissions();
+        renderRunGroups();
+        syncToTeamDrive();
+        showUndoToast(`Deleted mission "${m.name}".`, async () => {
+          await restoreDeletedMission(m.id);
         });
       });
       if (missionRows) missionRows.push({ row, mission: m });
@@ -1686,17 +1672,16 @@ function renderTaskList(container, mission) {
         <button class="btn-icon" data-act="del">&#128465;&#65039;</button>
       `;
       row.querySelector('[data-act="edit"]').addEventListener("click", () => openTaskModal(mission, t));
-      row.querySelector('[data-act="del"]').addEventListener("click", () => {
-        confirmDestructive(`Delete task "${t.name}"?`, async () => {
-          t.deleted = true;
-          t.deletedAt = Date.now();
-          await dbPut("missions", mission);
-          await loadMissions();
-          renderRunGroups();
-          syncToTeamDrive();
-          showUndoToast(`Deleted task "${t.name}".`, async () => {
-            await restoreDeletedTask(mission.id, t.id);
-          });
+      row.querySelector('[data-act="del"]').addEventListener("click", async () => {
+        if (!confirm(`Delete task "${t.name}"?`)) return;
+        t.deleted = true;
+        t.deletedAt = Date.now();
+        await dbPut("missions", mission);
+        await loadMissions();
+        renderRunGroups();
+        syncToTeamDrive();
+        showUndoToast(`Deleted task "${t.name}".`, async () => {
+          await restoreDeletedTask(mission.id, t.id);
         });
       });
       container.appendChild(row);
@@ -2729,16 +2714,15 @@ function renderRuns() {
         <button class="btn-icon rc-icon-btn" data-act="del" title="Delete">&#128465;&#65039;</button>
       </div>
     `;
-    card.querySelector('[data-act="del"]').addEventListener("click", () => {
-      confirmDestructive(`Delete incomplete game run "${run.label}"?`, async () => {
-        run.deleted = true;
-        run.deletedAt = Date.now();
-        await dbPut("runs", run);
-        await loadRuns();
-        syncToTeamDrive();
-        showUndoToast(`Deleted "${run.label}".`, async () => {
-          await restoreDeletedRun(run.id);
-        });
+    card.querySelector('[data-act="del"]').addEventListener("click", async () => {
+      if (!confirm(`Delete incomplete game run "${run.label}"?`)) return;
+      run.deleted = true;
+      run.deletedAt = Date.now();
+      await dbPut("runs", run);
+      await loadRuns();
+      syncToTeamDrive();
+      showUndoToast(`Deleted "${run.label}".`, async () => {
+        await restoreDeletedRun(run.id);
       });
     });
     list.appendChild(card);
@@ -2764,16 +2748,15 @@ function renderRuns() {
       </div>
     `;
     card.querySelector('[data-act="view"]').addEventListener("click", () => renderRunBreakdown(run));
-    card.querySelector('[data-act="del"]').addEventListener("click", () => {
-      confirmDestructive(`Delete game run "${run.label}"?`, async () => {
-        run.deleted = true;
-        run.deletedAt = Date.now();
-        await dbPut("runs", run);
-        await loadRuns();
-        syncToTeamDrive();
-        showUndoToast(`Deleted "${run.label}".`, async () => {
-          await restoreDeletedRun(run.id);
-        });
+    card.querySelector('[data-act="del"]').addEventListener("click", async () => {
+      if (!confirm(`Delete game run "${run.label}"?`)) return;
+      run.deleted = true;
+      run.deletedAt = Date.now();
+      await dbPut("runs", run);
+      await loadRuns();
+      syncToTeamDrive();
+      showUndoToast(`Deleted "${run.label}".`, async () => {
+        await restoreDeletedRun(run.id);
       });
     });
     list.appendChild(card);
@@ -3392,9 +3375,11 @@ document.getElementById("btn-export-backup").addEventListener("click", async () 
 
 document.getElementById("btn-import-backup").addEventListener("click", () => document.getElementById("file-import-backup").click());
 document.getElementById("btn-reset-db").addEventListener("click", () => {
-  confirmDestructive("This permanently erases every attachment, entry, mission, and run stored on this device. This can't be undone.", () => {
-    resetLocalDatabase();
-  });
+  const msg = state.firebaseUser
+    ? "This clears everything stored on this device. If you're signed in and synced (which you are), your team's data will pull back down automatically after — but anything made just now or while offline, before it had a chance to sync, will be lost for good."
+    : "This clears everything stored on this device. You're not signed in, so nothing will pull back down automatically — sign in first if you want your data to come back afterward.";
+  if (!confirm(msg)) return;
+  resetLocalDatabase();
 });
 document.getElementById("file-import-backup").addEventListener("change", async (e) => {
   const file = e.target.files[0];
@@ -3437,6 +3422,7 @@ function initFirebaseAuth() {
     if (user && !firestoreListenersStarted) {
       firestoreListenersStarted = true;
       startFirestoreListeners();
+      purgeOldTrash(); // re-run now that state.firebaseUser is actually set, so the Firestore-side purge (which was skipped at page load, before sign-in resolved) gets a chance to run
     }
   });
 }
@@ -3502,7 +3488,7 @@ function syncToTeamDrive() {
   driveSyncInFlight = true;
   setSyncStatus("Syncing…");
   performFirestoreSync()
-    .then(() => setSyncStatus(`Synced ${new Date().toLocaleTimeString()}`))
+    .then(() => setSyncStatus("Connected"))
     .catch((e) => { setSyncStatus("Sync failed — will retry on the next change."); showErrorBanner(`Sync failed: ${e.message}`); })
     .finally(() => {
       driveSyncInFlight = false;
@@ -3538,7 +3524,7 @@ function startFirestoreListeners() {
         changed = true;
       }
       if (changed) await refreshAfterRemoteChange(storeName);
-      setSyncStatus(`Synced ${new Date().toLocaleTimeString()}`);
+      setSyncStatus("Connected");
     }, (e) => { setSyncStatus("Sync failed — will retry on the next change."); showErrorBanner(`Team sync listener failed: ${e.message}`); });
   });
 }
@@ -3555,15 +3541,29 @@ async function purgeOldTrash() {
   const THIRTY_DAYS = 30 * 24 * 60 * 60 * 1000;
   const cutoff = Date.now() - THIRTY_DAYS;
   const isOld = (x) => x.deleted && x.deletedAt && x.deletedAt < cutoff;
+  // Best-effort: also remove the record from the shared Firestore database,
+  // not just locally — otherwise a live listener would just pull it right
+  // back down the next time this device (or a teammate's) reconnects.
+  async function purgeFromFirestore(storeName, id) {
+    if (!state.firebaseUser || !window.firebaseDb) return;
+    try {
+      const { doc, deleteDoc, collection } = window.firebaseFns;
+      await deleteDoc(doc(collection(window.firebaseDb, storeName), String(id)));
+    } catch (e) { /* best-effort — local purge still happened, will retry next launch */ }
+  }
 
-  for (const e of await dbGetAll("entries")) if (isOld(e)) await dbDelete("entries", e.id);
-  for (const a of await dbGetAll("attachments")) if (isOld(a)) await dbDelete("attachments", a.id);
-  for (const g of await dbGetAll("runGroups")) if (isOld(g)) await dbDelete("runGroups", g.id);
-  for (const r of await dbGetAll("runs")) if (isOld(r)) await dbDelete("runs", r.id);
+  for (const e of await dbGetAll("entries")) if (isOld(e)) { await dbDelete("entries", e.id); await purgeFromFirestore("entries", e.id); }
+  for (const a of await dbGetAll("attachments")) if (isOld(a)) { await dbDelete("attachments", a.id); await purgeFromFirestore("attachments", a.id); }
+  for (const g of await dbGetAll("runGroups")) if (isOld(g)) { await dbDelete("runGroups", g.id); await purgeFromFirestore("runGroups", g.id); }
+  for (const r of await dbGetAll("runs")) if (isOld(r)) { await dbDelete("runs", r.id); await purgeFromFirestore("runs", r.id); }
   for (const m of await dbGetAll("missions")) {
-    if (isOld(m)) { await dbDelete("missions", m.id); continue; }
+    if (isOld(m)) { await dbDelete("missions", m.id); await purgeFromFirestore("missions", m.id); continue; }
     const keptTasks = (m.tasks || []).filter((t) => !isOld(t));
-    if (keptTasks.length !== (m.tasks || []).length) { m.tasks = keptTasks; await dbPut("missions", m); }
+    if (keptTasks.length !== (m.tasks || []).length) {
+      m.tasks = keptTasks;
+      await dbPut("missions", m);
+      if (state.firebaseUser) { try { await window.firebaseFns.setDoc(window.firebaseFns.doc(window.firebaseFns.collection(window.firebaseDb, "missions"), String(m.id)), m); } catch (e) {} }
+    }
   }
 }
 const equipmentInspectionInput = document.getElementById("input-skip-equipment-inspection");

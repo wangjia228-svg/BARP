@@ -483,6 +483,10 @@ main { padding: 18px 16px 40px; max-width: 640px; margin: 0 auto; }
   background: none; border: none; color: var(--amber); font-weight: 700;
   font-size: 0.88rem; cursor: pointer; flex: none;
 }
+.toast-close-btn {
+  color: var(--paper) !important; opacity: 0.6; font-weight: 400 !important;
+  font-size: 1rem !important; padding: 0 2px;
+}
 
 /* --- Added: full-screen guided practice run --- */
 .guided-fullscreen {

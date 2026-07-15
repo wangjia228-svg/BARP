@@ -99,13 +99,13 @@
     <div class="section-row" style="margin-top:28px;">
       <h2>Backup</h2>
     </div>
-    <p class="empty-sub">Everything is stored only on this device. Export a backup file regularly so you don't lose it if this device is lost, reset, or the app data gets cleared.</p>
+    <p class="empty-sub">If you're signed in, everything also lives in your team's shared cloud database — this manual export is a secondary backup on top of that, useful if you're not signed in or want an offline copy.</p>
     <div class="btn-group">
       <button class="btn btn-ghost" id="btn-export-backup">Export full backup (.json)</button>
       <button class="btn btn-ghost" id="btn-import-backup">Restore from backup file</button>
       <button class="btn btn-danger" id="btn-reset-db">Reset local data</button>
     </div>
-    <p class="empty-sub">Only reset if the app is stuck (e.g. a database error banner). This permanently erases everything stored on this device — export a manual backup first if you can.</p>
+    <p class="empty-sub">Only reset if the app is stuck (e.g. a database error banner). This erases everything stored on this device — but if you're signed in and synced, anything already pushed to the team's cloud database will just come back automatically once you sign in again. Only truly unsynced changes are lost for good, so export a manual backup first if you're not sure.</p>
 
     <div class="section-row" style="margin-top:28px;">
       <h2>App Settings</h2>
@@ -154,7 +154,7 @@
     getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged
   } from "https://www.gstatic.com/firebasejs/12.16.0/firebase-auth.js";
   import {
-    getFirestore, collection, doc, setDoc, onSnapshot
+    getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot
   } from "https://www.gstatic.com/firebasejs/12.16.0/firebase-firestore.js";
 
   const firebaseConfig = {
@@ -173,7 +173,7 @@
   // needs this way rather than restructuring the whole file into a module.
   window.firebaseAuth = auth;
   window.firebaseDb = db;
-  window.firebaseFns = { GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged, collection, doc, setDoc, onSnapshot };
+  window.firebaseFns = { GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged, collection, doc, setDoc, deleteDoc, onSnapshot };
   window.dispatchEvent(new Event("firebase-ready"));
 </script>
 <script src="https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js"></script>
