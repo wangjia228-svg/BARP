@@ -467,9 +467,9 @@ function pointsFromRawTask(t, raw) {
   }
   return 0;
 }
-function missionMaxPoints(m) { return (m.tasks || []).reduce((sum, t) => sum + taskMaxPoints(t), 0); }
+function missionMaxPoints(m) { return visibleTasks(m).reduce((sum, t) => sum + taskMaxPoints(t), 0); }
 function missionScoreForRun(m, run) {
-  return (m.tasks || []).reduce((sum, t) => sum + pointsFromRawTask(t, (run.rawScores || {})[t.id]), 0);
+  return visibleTasks(m).reduce((sum, t) => sum + pointsFromRawTask(t, (run.rawScores || {})[t.id]), 0);
 }
 // Bonus points awarded for unused precision tokens at the end of a run —
 // every run starts with 6, and how many are left over scores extra.
@@ -499,7 +499,7 @@ function runTotal(run, missions) {
 // ATTACHMENTS + LOG
 // ==========================================================
 async function loadAttachments() {
-  state.attachments = (await dbGetAll("attachments")).sort((a, b) => (a.order ?? a.number ?? 0) - (b.order ?? b.number ?? 0));
+  state.attachments = (await dbGetAll("attachments")).filter((a) => !a.deleted).sort((a, b) => (a.order ?? a.number ?? 0) - (b.order ?? b.number ?? 0));
   if (!state.filterInitialized) {
     state.selectedAttachmentIds = new Set(state.attachments.map((a) => a.id));
     state.filterInitialized = true;
@@ -510,6 +510,28 @@ async function loadAttachments() {
   renderAttachmentsSetup();
   await renderIterationTotal();
   await renderEntryList();
+}
+async function renumberAttachments() {
+  const remaining = (await dbGetAll("attachments")).filter((a) => !a.deleted).sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+  for (const [i, a] of remaining.entries()) { a.order = i; a.number = i + 1; await dbPut("attachments", a); }
+}
+async function restoreDeletedAttachment(id) {
+  const att = await dbGet("attachments", id);
+  if (!att) return;
+  delete att.deleted;
+  delete att.deletedAt;
+  await dbPut("attachments", att);
+  const entries = await dbGetByIndex("entries", "byAttachment", id);
+  for (const en of entries) {
+    if (en.deletedWithAttachmentId === id) {
+      delete en.deleted;
+      delete en.deletedAt;
+      delete en.deletedWithAttachmentId;
+      await dbPut("entries", en);
+    }
+  }
+  await renumberAttachments();
+  await loadAttachments();
 }
 
 async function iterationCount(attachmentId) {
@@ -616,21 +638,14 @@ async function renderEntryList() {
     card.className = "entry-card";
     card.innerHTML = entryCardHTML(entry, showTag ? (att ? `#${att.number} ${att.name}` : "deleted attachment") : null);
     card.querySelector(".btn-icon").addEventListener("click", () => {
-      confirmDestructive("This removes the entry from the log. You'll have a few seconds to undo right after.", async () => {
+      confirmDestructive("This removes the entry from the log. You can restore it any time from Settings → Recently Deleted.", async () => {
         entry.deleted = true;
         entry.deletedAt = Date.now();
         await dbPut("entries", entry);
         await renderEntryList();
         await renderIterationTotal();
         renderAttachmentsSetup();
-        showUndoToast("Entry deleted.", async () => {
-          delete entry.deleted;
-          delete entry.deletedAt;
-          await dbPut("entries", entry);
-          await renderEntryList();
-          await renderIterationTotal();
-          renderAttachmentsSetup();
-        });
+        showUndoToast("Entry deleted.", () => restoreDeletedEntry(entry));
       });
     });
     card.querySelectorAll(".entry-showmore-btn").forEach((btn) => {
@@ -673,24 +688,15 @@ function renderAttachmentsSetup() {
         row.querySelector('[data-act="del"]').addEventListener("click", () => {
           confirmDestructive(`Delete "${att.name}" and everything logged under it?`, async () => {
             const entries = await dbGetByIndex("entries", "byAttachment", att.id);
-            const entriesSnapshot = entries.map((e) => ({ ...e }));
-            const attSnapshot = { ...att };
-            const othersBefore = state.attachments
-              .filter((a) => a.id !== att.id)
-              .map((a) => ({ id: a.id, order: a.order, number: a.number }));
-            for (const en of entries) await dbDelete("entries", en.id);
-            await dbDelete("attachments", att.id);
-            const remaining = (await dbGetAll("attachments")).sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
-            for (const [i, a] of remaining.entries()) { a.order = i; a.number = i + 1; await dbPut("attachments", a); }
+            const now = Date.now();
+            for (const en of entries) { if (!en.deleted) { en.deleted = true; en.deletedAt = now; en.deletedWithAttachmentId = att.id; await dbPut("entries", en); } }
+            att.deleted = true;
+            att.deletedAt = now;
+            await dbPut("attachments", att);
+            await renumberAttachments();
             await loadAttachments();
-            showUndoToast(`Deleted "${attSnapshot.name}".`, async () => {
-              await dbPut("attachments", attSnapshot);
-              for (const en of entriesSnapshot) await dbPut("entries", en);
-              for (const o of othersBefore) {
-                const a = await dbGet("attachments", o.id);
-                if (a) { a.order = o.order; a.number = o.number; await dbPut("attachments", a); }
-              }
-              await loadAttachments();
+            showUndoToast(`Deleted "${att.name}".`, async () => {
+              await restoreDeletedAttachment(att.id);
             });
           });
         });
@@ -798,7 +804,7 @@ function openAttachmentModal(att) {
     stopCamera();
     const name = document.getElementById("m-att-name").value.trim();
     if (!name) { alert("Give this attachment a name."); return; }
-    const record = isEdit ? att : { order: state.attachments.length, number: state.attachments.length + 1 };
+    const record = isEdit ? att : { id: crypto.randomUUID(), order: state.attachments.length, number: state.attachments.length + 1 };
     record.name = name;
     record.photo = pendingAttPhoto;
     if (!isEdit) record.createdAt = Date.now();
@@ -907,11 +913,11 @@ function openRecordIterationModalClassic() {
   document.getElementById("m-save").addEventListener("click", async () => {
     stopRecognizer();
     stopCamera();
-    const attachmentId = Number(document.getElementById("ri-attachment").value);
+    const attachmentId = document.getElementById("ri-attachment").value;
     const whatChanged = document.getElementById("ri-what").value.trim();
     const whyChanged = document.getElementById("ri-why").value.trim();
     if (!whatChanged && !whyChanged && !pendingPhoto) { alert("Add a photo or a note first."); return; }
-    await dbPut("entries", { attachmentId, timestamp: Date.now(), photo: pendingPhoto, whatChanged, whyChanged, size: pendingSize });
+    await dbPut("entries", { id: crypto.randomUUID(), attachmentId, timestamp: Date.now(), photo: pendingPhoto, whatChanged, whyChanged, size: pendingSize });
     state.selectedAttachmentIds.add(attachmentId);
     closeModal();
     renderAttachmentChips();
@@ -980,7 +986,7 @@ function renderIterAttachmentStep() {
   wireIterNav();
   document.querySelectorAll(".iter-attachment-btn").forEach((btn) => {
     btn.addEventListener("click", () => {
-      state.iterFlow.attachmentId = Number(btn.dataset.id);
+      state.iterFlow.attachmentId = btn.dataset.id;
       state.iterFlow.step++;
       renderIterStep();
     });
@@ -1124,7 +1130,7 @@ function renderIterWhyStep() {
     state.iterFlow.why = document.getElementById("iter-why").value.trim();
     const { attachmentId, size, photo, what, why } = state.iterFlow;
     if (!what && !why && !photo) { alert("Add a photo or a note first."); return; }
-    await dbPut("entries", { attachmentId, timestamp: Date.now(), photo, whatChanged: what, whyChanged: why, size });
+    await dbPut("entries", { id: crypto.randomUUID(), attachmentId, timestamp: Date.now(), photo, whatChanged: what, whyChanged: why, size });
     state.selectedAttachmentIds.add(attachmentId);
     state.iterFlow = null;
     closeGuidedFullscreen();
@@ -1236,7 +1242,17 @@ function stopRecognizer() { if (recognizer) { try { recognizer.stop(); } catch (
 // MISSIONS + TASKS (Setup tab)
 // ==========================================================
 async function loadRunGroups() {
-  state.runGroups = (await dbGetAll("runGroups")).sort((a, b) => a.order - b.order);
+  state.runGroups = (await dbGetAll("runGroups")).filter((g) => !g.deleted).sort((a, b) => a.order - b.order);
+  renderRunGroups();
+}
+async function restoreDeletedRunGroup(id) {
+  const g = await dbGet("runGroups", id);
+  if (!g) return;
+  delete g.deleted;
+  delete g.deletedAt;
+  await dbPut("runGroups", g);
+  await loadRunGroups();
+  await loadMissions();
   renderRunGroups();
 }
 
@@ -1245,8 +1261,8 @@ async function loadRunGroups() {
 // sequence. This recomputes it from (run-group order, mission's order within
 // that group) any time the grouping structure changes.
 async function recomputeGlobalMissionOrder() {
-  const groups = (await dbGetAll("runGroups")).sort((a, b) => a.order - b.order);
-  const allMissions = await dbGetAll("missions");
+  const groups = (await dbGetAll("runGroups")).filter((g) => !g.deleted).sort((a, b) => a.order - b.order);
+  const allMissions = (await dbGetAll("missions")).filter((m) => !m.deleted);
   let globalIdx = 0;
   for (const g of groups) {
     const groupMissions = allMissions.filter((m) => m.runGroupId === g.id).sort((a, b) => a.order - b.order);
@@ -1257,8 +1273,34 @@ async function recomputeGlobalMissionOrder() {
 }
 
 async function loadMissions() {
-  state.missions = (await dbGetAll("missions")).sort((a, b) => a.order - b.order);
+  state.missions = (await dbGetAll("missions")).filter((m) => !m.deleted).sort((a, b) => a.order - b.order);
   state.missions.forEach((m) => { if (!m.tasks) m.tasks = []; if (m.taskSeq === undefined) m.taskSeq = 0; });
+}
+// Deleted tasks stay in mission.tasks (so they can be restored later) — every
+// place that displays or scores a mission's tasks should read through this,
+// not mission.tasks directly, so a soft-deleted task doesn't show up in the
+// UI or count towards scoring while it's sitting in the trash.
+function visibleTasks(mission) { return (mission.tasks || []).filter((t) => !t.deleted); }
+async function restoreDeletedMission(id) {
+  const m = await dbGet("missions", id);
+  if (!m) return;
+  delete m.deleted;
+  delete m.deletedAt;
+  await dbPut("missions", m);
+  await recomputeGlobalMissionOrder();
+  await loadMissions();
+  renderRunGroups();
+}
+async function restoreDeletedTask(missionId, taskId) {
+  const m = await dbGet("missions", missionId);
+  if (!m) return;
+  const t = (m.tasks || []).find((tt) => tt.id === taskId);
+  if (!t) return;
+  delete t.deleted;
+  delete t.deletedAt;
+  await dbPut("missions", m);
+  await loadMissions();
+  renderRunGroups();
 }
 
 function taskSubLabel(t) {
@@ -1312,25 +1354,25 @@ async function saveAllOrder() {
   const groupEls = [...document.querySelectorAll("#rungroup-list > [data-gid]")];
 
   groupEls.forEach((el, idx) => {
-    const g = state.runGroups.find((x) => x.id === Number(el.dataset.gid));
+    const g = state.runGroups.find((x) => x.id === el.dataset.gid);
     if (g) g.order = idx;
   });
   for (const g of state.runGroups) await dbPut("runGroups", g);
 
   groupEls.forEach((groupEl) => {
-    const gid = Number(groupEl.dataset.gid);
+    const gid = groupEl.dataset.gid;
     const missionListContainer = groupEl.querySelector(":scope > .task-list");
     if (!missionListContainer) return;
     const missionEls = [...missionListContainer.querySelectorAll(":scope > [data-mid]")];
     missionEls.forEach((mEl, idx) => {
-      const m = state.missions.find((x) => x.id === Number(mEl.dataset.mid));
+      const m = state.missions.find((x) => x.id === mEl.dataset.mid);
       if (m) { m.order = idx; m.runGroupId = gid; }
     });
   });
 
   const allMissionEls = [...document.querySelectorAll("[data-mid]")];
   for (const mEl of allMissionEls) {
-    const m = state.missions.find((x) => x.id === Number(mEl.dataset.mid));
+    const m = state.missions.find((x) => x.id === mEl.dataset.mid);
     if (!m) continue;
     const taskEls = [...mEl.querySelectorAll(":scope > .task-list > [data-tid]")];
     if (!taskEls.length) continue;
@@ -1389,16 +1431,14 @@ function renderRunGroups() {
       const delBtn = wrap.querySelector('[data-act="del"]');
       if (delBtn) delBtn.addEventListener("click", () => {
         confirmDestructive(`Delete "${g.name}"? Its missions move to "Unassigned" rather than being deleted.`, async () => {
-          const gSnapshot = { ...g };
-          await dbDelete("runGroups", g.id);
+          g.deleted = true;
+          g.deletedAt = Date.now();
+          await dbPut("runGroups", g);
           await loadRunGroups();
           await loadMissions();
           renderRunGroups();
-          showUndoToast(`Deleted "${gSnapshot.name}".`, async () => {
-            await dbPut("runGroups", gSnapshot);
-            await loadRunGroups();
-            await loadMissions();
-            renderRunGroups();
+          showUndoToast(`Deleted "${g.name}".`, async () => {
+            await restoreDeletedRunGroup(g.id);
           });
         });
       });
@@ -1457,7 +1497,7 @@ function renderOrphanMissions(container, orphans) {
         <span class="mission-expand-chevron">${expanded ? "&#9660;" : "&#9654;"}</span>
         <div class="m-info">
           <div class="m-name">${esc(m.name)}</div>
-          <div class="m-sub">${(m.tasks || []).length} task${(m.tasks || []).length === 1 ? "" : "s"} · max ${missionMaxPoints(m)} pts</div>
+          <div class="m-sub">${visibleTasks(m).length} task${visibleTasks(m).length === 1 ? "" : "s"} · max ${missionMaxPoints(m)} pts</div>
         </div>
         <button class="btn-icon btn-icon-add" data-act="add-task" title="Add a task">&#43;</button>
         <button class="btn-icon" data-act="edit">&#9998;&#65039;</button>
@@ -1474,14 +1514,13 @@ function renderOrphanMissions(container, orphans) {
     row.querySelector('[data-act="edit"]').addEventListener("click", () => openMissionNameModal(m, null));
     row.querySelector('[data-act="del"]').addEventListener("click", () => {
       confirmDestructive(`Delete mission "${m.name}" and all its tasks?`, async () => {
-        const mSnapshot = { ...m, tasks: (m.tasks || []).map((t) => ({ ...t })) };
-        await dbDelete("missions", m.id);
+        m.deleted = true;
+        m.deletedAt = Date.now();
+        await dbPut("missions", m);
         await loadMissions();
         renderRunGroups();
-        showUndoToast(`Deleted mission "${mSnapshot.name}".`, async () => {
-          await dbPut("missions", mSnapshot);
-          await loadMissions();
-          renderRunGroups();
+        showUndoToast(`Deleted mission "${m.name}".`, async () => {
+          await restoreDeletedMission(m.id);
         });
       });
     });
@@ -1504,7 +1543,7 @@ function openRunGroupModal(g) {
   document.getElementById("m-save").addEventListener("click", async () => {
     const name = document.getElementById("rg-name").value.trim();
     if (!name) { alert("Name this run."); return; }
-    const record = isEdit ? g : { order: state.runGroups.length };
+    const record = isEdit ? g : { id: crypto.randomUUID(), order: state.runGroups.length };
     record.name = name;
     const id = await dbPut("runGroups", record);
     closeModal();
@@ -1532,7 +1571,7 @@ function renderMissionsForGroup(container, group, missionRows) {
         <span class="mission-expand-chevron">${expanded ? "&#9660;" : "&#9654;"}</span>
         <div class="m-info">
           <div class="m-name">${esc(m.name)}</div>
-          <div class="m-sub">${(m.tasks || []).length} task${(m.tasks || []).length === 1 ? "" : "s"} · max ${missionMaxPoints(m)} pts</div>
+          <div class="m-sub">${visibleTasks(m).length} task${visibleTasks(m).length === 1 ? "" : "s"} · max ${missionMaxPoints(m)} pts</div>
         </div>
         ${editing ? `<button class="btn-icon btn-icon-add" data-act="add-task" title="Add a task">&#43;</button><button class="btn-icon" data-act="edit">&#9998;&#65039;</button><button class="btn-icon" data-act="del">&#128465;&#65039;</button>` : ""}
       </div>
@@ -1551,14 +1590,13 @@ function renderMissionsForGroup(container, group, missionRows) {
       const delBtn = row.querySelector('[data-act="del"]');
       if (delBtn) delBtn.addEventListener("click", () => {
         confirmDestructive(`Delete mission "${m.name}" and all its tasks?`, async () => {
-          const mSnapshot = { ...m, tasks: (m.tasks || []).map((t) => ({ ...t })) };
-          await dbDelete("missions", m.id);
+          m.deleted = true;
+          m.deletedAt = Date.now();
+          await dbPut("missions", m);
           await loadMissions();
           renderRunGroups();
-          showUndoToast(`Deleted mission "${mSnapshot.name}".`, async () => {
-            await dbPut("missions", mSnapshot);
-            await loadMissions();
-            renderRunGroups();
+          showUndoToast(`Deleted mission "${m.name}".`, async () => {
+            await restoreDeletedMission(m.id);
           });
         });
       });
@@ -1594,8 +1632,8 @@ function openMissionNameModal(m, group) {
     const name = document.getElementById("m-mission-name").value.trim();
     if (!name) { alert("Name this mission."); return; }
     const numberVal = document.getElementById("m-mission-number").value.trim();
-    const newGroupId = Number(document.getElementById("m-mission-run").value);
-    const record = isEdit ? m : { order: 9999, tasks: [], taskSeq: 0 };
+    const newGroupId = document.getElementById("m-mission-run").value;
+    const record = isEdit ? m : { id: crypto.randomUUID(), order: 9999, tasks: [], taskSeq: 0 };
     record.name = name;
     record.number = numberVal === "" ? null : Number(numberVal);
     record.runGroupId = newGroupId;
@@ -1620,7 +1658,7 @@ function optionRowHtml(label = "", points = 0) {
 function renderTaskList(container, mission) {
   const editing = state.editingAllOrder;
   container.innerHTML = "";
-  (mission.tasks || []).forEach((t) => {
+  visibleTasks(mission).forEach((t) => {
     const row = document.createElement("div");
     row.dataset.tid = t.id;
     if (editing) {
@@ -1634,21 +1672,13 @@ function renderTaskList(container, mission) {
       row.querySelector('[data-act="edit"]').addEventListener("click", () => openTaskModal(mission, t));
       row.querySelector('[data-act="del"]').addEventListener("click", () => {
         confirmDestructive(`Delete task "${t.name}"?`, async () => {
-          const tSnapshot = { ...t };
-          const originalIndex = mission.tasks.findIndex((tt) => tt.id === t.id);
-          mission.tasks = mission.tasks.filter((tt) => tt.id !== t.id);
+          t.deleted = true;
+          t.deletedAt = Date.now();
           await dbPut("missions", mission);
           await loadMissions();
           renderRunGroups();
-          showUndoToast(`Deleted task "${tSnapshot.name}".`, async () => {
-            const freshMission = await dbGet("missions", mission.id);
-            if (freshMission) {
-              const idx = Math.min(originalIndex, freshMission.tasks.length);
-              freshMission.tasks.splice(idx, 0, tSnapshot);
-              await dbPut("missions", freshMission);
-            }
-            await loadMissions();
-            renderRunGroups();
+          showUndoToast(`Deleted task "${t.name}".`, async () => {
+            await restoreDeletedTask(mission.id, t.id);
           });
         });
       });
@@ -1719,7 +1749,7 @@ function openTaskModal(mission, t) {
     const name = document.getElementById("t-name").value.trim();
     if (!name) { alert("Name this task."); return; }
     const ty = document.getElementById("t-type").value;
-    const record = isEdit ? t : { id: `m${mission.id}-t${++mission.taskSeq}` };
+    const record = isEdit ? t : { id: crypto.randomUUID() };
     record.name = name; record.type = ty;
     if (ty === "bool") {
       record.points = Number(document.getElementById("t-bool-points").value) || 0;
@@ -1778,7 +1808,8 @@ document.getElementById("file-import-missions").addEventListener("change", async
   const iRun = col("run"), iMission = col("mission"), iTask = col("task"), iType = col("type"), iPoints = col("points"), iMax = col("max"), iPpu = col("pointsperunit"), iOptions = col("options");
   if (iMission === -1 || iTask === -1 || iType === -1) { alert("CSV needs at least Mission, Task, and Type columns."); return; }
   if (!state.runGroups.length) {
-    const gid = await dbPut("runGroups", { name: "Run 1", order: 0 });
+    const gid = crypto.randomUUID();
+    await dbPut("runGroups", { id: gid, name: "Run 1", order: 0 });
     state.runGroups = await dbGetAll("runGroups");
   }
   const dataRows = rows.slice(1);
@@ -1792,7 +1823,8 @@ document.getElementById("file-import-missions").addEventListener("change", async
 
     let group = runName ? state.runGroups.find((g) => g.name.toLowerCase() === runName.toLowerCase()) : state.runGroups[0];
     if (runName && !group) {
-      const gid = await dbPut("runGroups", { name: runName, order: state.runGroups.length });
+      const gid = crypto.randomUUID();
+      await dbPut("runGroups", { id: gid, name: runName, order: state.runGroups.length });
       group = { id: gid, name: runName, order: state.runGroups.length };
       state.runGroups.push(group);
       runsAdded++;
@@ -1800,13 +1832,12 @@ document.getElementById("file-import-missions").addEventListener("change", async
 
     let mission = state.missions.find((m) => m.name.toLowerCase() === missionName.toLowerCase());
     if (!mission) {
-      mission = { order: 9999, name: missionName, tasks: [], taskSeq: 0, runGroupId: group.id };
-      const id = await dbPut("missions", mission);
-      mission.id = id;
+      mission = { id: crypto.randomUUID(), order: 9999, name: missionName, tasks: [], taskSeq: 0, runGroupId: group.id };
+      await dbPut("missions", mission);
       state.missions.push(mission);
       missionsAdded++;
     }
-    const task = { id: `m${mission.id}-t${++mission.taskSeq}`, name: taskName, type };
+    const task = { id: crypto.randomUUID(), name: taskName, type };
     if (type === "bool") task.points = Number(r[iPoints]) || 0;
     else if (type === "number") { task.max = Number(r[iMax]) || 0; task.pointsPerUnit = Number(r[iPpu]) || 0; }
     else if (type === "choice") {
@@ -1948,7 +1979,7 @@ function nextGameRunLabel() {
 let pendingEquipmentInspection = false;
 
 async function startGuidedRun() {
-  const legsWithMissions = state.runGroups.filter((g) => getLegMissions(g).some((m) => (m.tasks || []).length));
+  const legsWithMissions = state.runGroups.filter((g) => getLegMissions(g).some((m) => visibleTasks(m).length));
   if (!legsWithMissions.length) {
     openModal(`<h2>No missions yet</h2><p class="empty-sub">Add runs, missions, and tasks in the Settings tab first, matching the official scoresheet.</p>
       <div class="modal-actions"><button class="btn btn-primary" id="m-close">Got it</button></div>`);
@@ -2028,6 +2059,7 @@ async function runCountdown() {
 async function actuallyStartRun() {
   const now = Date.now();
   const run = {
+    id: crypto.randomUUID(),
     order: state.runs.length,
     label: nextGameRunLabel(),
     date: new Date(now).toLocaleDateString(),
@@ -2040,11 +2072,10 @@ async function actuallyStartRun() {
     transitionTimings: [],
     notes: "",
   };
-  const id = await dbPut("runs", run);
-  run.id = id;
+  await dbPut("runs", run);
   // Skip to the first leg that actually has missions with tasks.
   let legIdx = 0;
-  while (legIdx < state.runGroups.length && !getLegMissions(state.runGroups[legIdx]).some((m) => (m.tasks || []).length)) legIdx++;
+  while (legIdx < state.runGroups.length && !getLegMissions(state.runGroups[legIdx]).some((m) => visibleTasks(m).length)) legIdx++;
   state.guidedRun = {
     run,
     legIdx,
@@ -2236,7 +2267,7 @@ function renderCurrentTaskScreen() {
   const leg = state.runGroups[legIdx];
   const legMissions = getLegMissions(leg);
   const mission = legMissions[missionIdxInLeg];
-  const tasks = mission.tasks || [];
+  const tasks = visibleTasks(mission);
   if (taskIdx >= tasks.length) {
     finishCurrentMission(leg, legMissions);
     return;
@@ -2287,7 +2318,7 @@ function renderCurrentTaskScreen() {
     } else if (state.guidedRun.missionIdxInLeg > 0) {
       state.guidedRun.missionIdxInLeg--;
       const prevMission = legMissions[state.guidedRun.missionIdxInLeg];
-      state.guidedRun.taskIdx = Math.max(0, (prevMission.tasks || []).length - 1);
+      state.guidedRun.taskIdx = Math.max(0, visibleTasks(prevMission).length - 1);
     } else {
       return;
     }
@@ -2357,7 +2388,7 @@ function renderRobotReturnedScreen() {
   document.getElementById("grn-back").addEventListener("click", () => {
     const legMissions = getLegMissions(leg);
     state.guidedRun.missionIdxInLeg = legMissions.length - 1;
-    state.guidedRun.taskIdx = Math.max(0, (legMissions[legMissions.length - 1].tasks || []).length - 1);
+    state.guidedRun.taskIdx = Math.max(0, visibleTasks(legMissions[legMissions.length - 1]).length - 1);
     renderCurrentTaskScreen();
   });
   document.getElementById("grn-done").addEventListener("click", async () => {
@@ -2365,7 +2396,7 @@ function renderRobotReturnedScreen() {
     const now = Date.now();
     // Find the next leg (in run-group order) that actually has scoreable missions.
     let nextLegIdx = legIdx + 1;
-    while (nextLegIdx < state.runGroups.length && !getLegMissions(state.runGroups[nextLegIdx]).some((m) => (m.tasks || []).length)) nextLegIdx++;
+    while (nextLegIdx < state.runGroups.length && !getLegMissions(state.runGroups[nextLegIdx]).some((m) => visibleTasks(m).length)) nextLegIdx++;
     if (nextLegIdx >= state.runGroups.length) {
       stopGuidedTimer();
       run.finishedAt = now;
@@ -2469,7 +2500,7 @@ function renderOverviewBody() {
       const score = missionScoreForRun(m, run);
       const max = missionMaxPoints(m);
       const timing = (run.missionTimings || []).find((t) => t.missionId === m.id);
-      const rows = (m.tasks || []).map((t) => taskRowHTML(t, run.rawScores)).join("") || `<p class="empty-sub">No tasks.</p>`;
+      const rows = visibleTasks(m).map((t) => taskRowHTML(t, run.rawScores)).join("") || `<p class="empty-sub">No tasks.</p>`;
       return `<div class="gfs-subsection">
         <h4>${esc(m.name)} <span class="gfs-task-pts">${score} / ${max}${timing ? ` &middot; ${fmtDuration(timing.durationMs)}` : ""}</span></h4>
         <div class="gfs-task-list">${rows}</div>
@@ -2539,8 +2570,88 @@ async function finalizeGuidedRun() {
 }
 // ---- Saved game runs / analysis ----
 async function loadRuns() {
-  state.runs = (await dbGetAll("runs")).sort((a, b) => a.order - b.order);
+  state.runs = (await dbGetAll("runs")).filter((r) => !r.deleted).sort((a, b) => a.order - b.order);
   renderRuns();
+}
+async function restoreDeletedRun(id) {
+  const run = await dbGet("runs", id);
+  if (!run) return;
+  delete run.deleted;
+  delete run.deletedAt;
+  await dbPut("runs", run);
+  await loadRuns();
+}
+async function restoreDeletedEntry(entry) {
+  delete entry.deleted;
+  delete entry.deletedAt;
+  delete entry.deletedWithAttachmentId;
+  await dbPut("entries", entry);
+  renderAttachmentChips();
+  await renderEntryList();
+  await renderIterationTotal();
+  renderAttachmentsSetup();
+}
+
+// ---- Recently Deleted (cloud-restorable trash) ----
+// Every delete in this app is a soft delete now — this is the "later" undo,
+// separate from and longer-lived than the immediate 8-second toast: restore
+// any specific item, any time, not just right after deleting it.
+async function openRecentlyDeletedModal() {
+  const [allAttachments, allEntries, allRunGroups, allMissions, allRuns] = await Promise.all([
+    dbGetAll("attachments"), dbGetAll("entries"), dbGetAll("runGroups"), dbGetAll("missions"), dbGetAll("runs"),
+  ]);
+  const deletedAttachments = allAttachments.filter((a) => a.deleted);
+  const deletedEntries = allEntries.filter((e) => e.deleted);
+  const deletedRunGroups = allRunGroups.filter((g) => g.deleted);
+  const deletedMissions = allMissions.filter((m) => m.deleted);
+  const deletedTasks = [];
+  allMissions.forEach((m) => { (m.tasks || []).forEach((t) => { if (t.deleted) deletedTasks.push({ mission: m, task: t }); }); });
+  const deletedRuns = allRuns.filter((r) => r.deleted);
+  const totalCount = deletedAttachments.length + deletedEntries.length + deletedRunGroups.length + deletedMissions.length + deletedTasks.length + deletedRuns.length;
+
+  openModal(`
+    <h2>Recently Deleted</h2>
+    ${totalCount === 0 ? `<p class="empty-sub">Nothing deleted.</p>` : `<div id="rd-sections"></div>`}
+    <div class="modal-actions"><button class="btn btn-ghost btn-full" id="m-close" type="button">Close</button></div>
+  `);
+  document.getElementById("m-close").addEventListener("click", closeModal);
+  if (totalCount === 0) return;
+  const container = document.getElementById("rd-sections");
+
+  function addSection(title, items, nameFn, deletedAtFn, onRestore) {
+    if (!items.length) return;
+    const section = document.createElement("div");
+    section.className = "gfs-section";
+    section.innerHTML = `<h3>${esc(title)}</h3>`;
+    const list = document.createElement("div");
+    list.className = "mission-list";
+    items.forEach((item) => {
+      const row = document.createElement("div");
+      row.className = "mission-row";
+      row.innerHTML = `
+        <div class="m-info">
+          <div class="m-name">${esc(nameFn(item))}</div>
+          <div class="m-sub">Deleted ${new Date(deletedAtFn(item)).toLocaleString()}</div>
+        </div>
+        <button class="btn btn-ghost">Restore</button>
+      `;
+      row.querySelector("button").addEventListener("click", async () => {
+        await onRestore(item);
+        closeModal();
+        openRecentlyDeletedModal();
+      });
+      list.appendChild(row);
+    });
+    section.appendChild(list);
+    container.appendChild(section);
+  }
+
+  addSection("Attachments", deletedAttachments, (a) => a.name, (a) => a.deletedAt, (a) => restoreDeletedAttachment(a.id));
+  addSection("Log entries", deletedEntries, (e) => e.whatChanged || e.whyChanged || "Entry", (e) => e.deletedAt, (e) => restoreDeletedEntry(e));
+  addSection("Runs (leg groups)", deletedRunGroups, (g) => g.name, (g) => g.deletedAt, (g) => restoreDeletedRunGroup(g.id));
+  addSection("Missions", deletedMissions, (m) => m.name, (m) => m.deletedAt, (m) => restoreDeletedMission(m.id));
+  addSection("Tasks", deletedTasks, ({ mission, task }) => `${task.name} (in ${mission.name})`, ({ task }) => task.deletedAt, ({ mission, task }) => restoreDeletedTask(mission.id, task.id));
+  addSection("Game runs", deletedRuns, (r) => r.label, (r) => r.deletedAt, (r) => restoreDeletedRun(r.id));
 }
 
 function getRunDateFilterRange() {
@@ -2598,12 +2709,12 @@ function renderRuns() {
     `;
     card.querySelector('[data-act="del"]').addEventListener("click", () => {
       confirmDestructive(`Delete incomplete game run "${run.label}"?`, async () => {
-        const runSnapshot = { ...run };
-        await dbDelete("runs", run.id);
+        run.deleted = true;
+        run.deletedAt = Date.now();
+        await dbPut("runs", run);
         await loadRuns();
-        showUndoToast(`Deleted "${runSnapshot.label}".`, async () => {
-          await dbPut("runs", runSnapshot);
-          await loadRuns();
+        showUndoToast(`Deleted "${run.label}".`, async () => {
+          await restoreDeletedRun(run.id);
         });
       });
     });
@@ -2632,12 +2743,12 @@ function renderRuns() {
     card.querySelector('[data-act="view"]').addEventListener("click", () => renderRunBreakdown(run));
     card.querySelector('[data-act="del"]').addEventListener("click", () => {
       confirmDestructive(`Delete game run "${run.label}"?`, async () => {
-        const runSnapshot = { ...run };
-        await dbDelete("runs", run.id);
+        run.deleted = true;
+        run.deletedAt = Date.now();
+        await dbPut("runs", run);
         await loadRuns();
-        showUndoToast(`Deleted "${runSnapshot.label}".`, async () => {
-          await dbPut("runs", runSnapshot);
-          await loadRuns();
+        showUndoToast(`Deleted "${run.label}".`, async () => {
+          await restoreDeletedRun(run.id);
         });
       });
     });
@@ -2728,7 +2839,7 @@ function renderBreakdownScoresTab() {
       const score = missionScoreForRun(m, run);
       const max = missionMaxPoints(m);
       const timing = (run.missionTimings || []).find((t) => t.missionId === m.id);
-      const rows = (m.tasks || []).map((t) => taskRowHTML(t, run.rawScores || {})).join("") || `<p class="empty-sub">No tasks.</p>`;
+      const rows = visibleTasks(m).map((t) => taskRowHTML(t, run.rawScores || {})).join("") || `<p class="empty-sub">No tasks.</p>`;
       return `<div class="gfs-subsection">
         <h4>${esc(m.name)} <span class="gfs-task-pts">${score} / ${max}${timing ? ` &middot; ${fmtDuration(timing.durationMs)}` : ""}</span></h4>
         <div class="gfs-task-list">${rows}</div>
@@ -2838,7 +2949,7 @@ function buildScoreRowDefs() {
     const group = groupsById[mission.runGroupId];
     const runName = group ? group.name : "Unassigned";
     const runNum = group ? groupNumberById[group.id] : "";
-    (mission.tasks || []).forEach((task) => {
+    visibleTasks(mission).forEach((task) => {
       const base = { mission, task, runName, runNum };
       if (task.type === "number") {
         const max = task.max || 0;
@@ -3056,7 +3167,7 @@ async function importScoresheetXLSX(file) {
 
   const taskLookup = new Map();
   state.missions.forEach((m) => {
-    (m.tasks || []).forEach((t) => {
+    visibleTasks(m).forEach((t) => {
       taskLookup.set(`${(m.name || "").trim().toLowerCase()}|||${(t.name || "").trim().toLowerCase()}`, t);
     });
   });
@@ -3128,6 +3239,7 @@ async function importScoresheetXLSX(file) {
       // actual runs, so don't manufacture an empty run for them.
       if (!Object.keys(rawScores).length && tokenBonusVal <= 0 && inspectionVal <= 0) continue;
       newRuns.push({
+        id: crypto.randomUUID(),
         order: state.runs.length + newRuns.length,
         label: `Imported Run ${newRuns.length + 1}`,
         date: todayStr,
@@ -3190,7 +3302,7 @@ document.getElementById("btn-export-runs-csv").addEventListener("click", () => {
   document.getElementById("m-export-csv").addEventListener("click", () => {
     const runs = inRangeRuns();
     if (!runs.length) { alert("No runs in that range."); return; }
-    if (!state.missions.some((m) => (m.tasks || []).length)) { alert("Add missions and tasks in Settings first."); return; }
+    if (!state.missions.some((m) => visibleTasks(m).length)) { alert("Add missions and tasks in Settings first."); return; }
     const csv = buildScoresheetCSV(runs);
     closeModal();
     download(`barp-scoresheet-${Date.now()}.csv`, csv, "text/csv");
@@ -3198,7 +3310,7 @@ document.getElementById("btn-export-runs-csv").addEventListener("click", () => {
   document.getElementById("m-export-xlsx").addEventListener("click", async () => {
     const runs = inRangeRuns();
     if (!runs.length) { alert("No runs in that range."); return; }
-    if (!state.missions.some((m) => (m.tasks || []).length)) { alert("Add missions and tasks in Settings first."); return; }
+    if (!state.missions.some((m) => visibleTasks(m).length)) { alert("Add missions and tasks in Settings first."); return; }
     if (typeof ExcelJS === "undefined") { alert("Couldn't load the Excel export library — check your internet connection and try again."); return; }
     const btn = document.getElementById("m-export-xlsx");
     btn.disabled = true; btn.textContent = "Building…";
@@ -3224,7 +3336,7 @@ document.getElementById("file-import-runs-xlsx").addEventListener("change", asyn
   e.target.value = "";
   if (!file) return;
   if (typeof ExcelJS === "undefined") { alert("Couldn't load the Excel library — check your internet connection and try again."); return; }
-  if (!state.missions.some((m) => (m.tasks || []).length)) { alert("Add missions and tasks in Settings first, so imported scores have something to match against."); return; }
+  if (!state.missions.some((m) => visibleTasks(m).length)) { alert("Add missions and tasks in Settings first, so imported scores have something to match against."); return; }
   try {
     const result = await importScoresheetXLSX(file);
     let msg = `Imported ${result.importedCount} run${result.importedCount === 1 ? "" : "s"}.`;
@@ -3238,6 +3350,7 @@ document.getElementById("file-import-runs-xlsx").addEventListener("change", asyn
 // ==========================================================
 // BACKUP
 // ==========================================================
+document.getElementById("btn-recently-deleted").addEventListener("click", () => openRecentlyDeletedModal());
 document.getElementById("btn-export-backup").addEventListener("click", async () => {
   const data = {
     version: 2,
@@ -3279,25 +3392,169 @@ document.getElementById("file-import-backup").addEventListener("change", async (
   }
 });
 
-// ---------- Season name ----------
-const seasonInput = document.getElementById("input-season-name");
-seasonInput.addEventListener("change", async () => {
-  const val = seasonInput.value.trim();
-  await dbPut("meta", { key: "seasonName", value: val });
-  document.getElementById("season-title").textContent = val || "BARP";
-});
-async function loadSeasonName() {
-  const rec = await dbGet("meta", "seasonName");
-  if (rec?.value) { seasonInput.value = rec.value; document.getElementById("season-title").textContent = rec.value; }
+// ---------- Google sign-in (browser-only OAuth, no backend/client-secret involved) ----------
+// The access token this gets back is scoped to drive.file only (files this
+// app creates/opens, not the whole Drive) and lives in memory for roughly an
+// hour — it's never written to IndexedDB, so signing in again after a reload
+// is expected, not a bug.
+const GOOGLE_CLIENT_ID = "789158300035-6otaah2007lt8t60g3mtgr3tqu48rl7l.apps.googleusercontent.com";
+const GOOGLE_SCOPES = "https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile";
+state.google = { accessToken: null, tokenExpiresAt: 0, email: null, name: null };
+let googleTokenClient = null;
+
+function initGoogleAuth() {
+  if (typeof google === "undefined" || !google.accounts || !google.accounts.oauth2) {
+    setTimeout(initGoogleAuth, 500); // library still loading over the network — retry shortly
+    return;
+  }
+  googleTokenClient = google.accounts.oauth2.initTokenClient({
+    client_id: GOOGLE_CLIENT_ID,
+    scope: GOOGLE_SCOPES,
+    callback: async (resp) => {
+      if (resp.error) { showErrorBanner(`Google sign-in failed: ${resp.error}`); return; }
+      state.google.accessToken = resp.access_token;
+      state.google.tokenExpiresAt = Date.now() + (Number(resp.expires_in) || 3600) * 1000;
+      await fetchGoogleUserInfo();
+      renderGoogleSignInStatus();
+    },
+  });
 }
+async function fetchGoogleUserInfo() {
+  try {
+    const res = await fetch("https://www.googleapis.com/oauth2/v3/userinfo", {
+      headers: { Authorization: `Bearer ${state.google.accessToken}` },
+    });
+    const info = await res.json();
+    state.google.email = info.email || null;
+    state.google.name = info.name || null;
+  } catch (e) {
+    showErrorBanner(`Couldn't fetch Google account info: ${e.message}`);
+  }
+}
+function renderGoogleSignInStatus() {
+  const statusEl = document.getElementById("google-signin-status");
+  const signInBtn = document.getElementById("btn-google-signin");
+  const signOutBtn = document.getElementById("btn-google-signout");
+  const signedIn = !!state.google.accessToken && Date.now() < state.google.tokenExpiresAt;
+  if (statusEl) statusEl.textContent = signedIn ? `Signed in as ${state.google.name || state.google.email}.` : "Not signed in.";
+  if (signInBtn) signInBtn.hidden = signedIn;
+  if (signOutBtn) signOutBtn.hidden = !signedIn;
+  renderDriveFileStatus();
+}
+document.getElementById("btn-google-signin").addEventListener("click", () => {
+  if (!googleTokenClient) { showErrorBanner("Google sign-in isn't ready yet — check your internet connection and try again."); return; }
+  googleTokenClient.requestAccessToken();
+});
+document.getElementById("btn-google-signout").addEventListener("click", () => {
+  if (state.google.accessToken && typeof google !== "undefined" && google.accounts) {
+    google.accounts.oauth2.revoke(state.google.accessToken, () => {});
+  }
+  state.google = { accessToken: null, tokenExpiresAt: 0, email: null, name: null };
+  renderGoogleSignInStatus();
+});
+
+// ---------- Team Drive file (Picker connect + create) ----------
+// The Picker API is separate from the Drive API — the API key below only
+// authorizes the picker *widget* (browsing/selecting a file); actually
+// reading or writing that file's contents happens through the Drive API,
+// authorized by the OAuth access token above, not this key.
+const GOOGLE_API_KEY = "AIzaSyD2l23YVuS2S7xDaqH5E3MFDTh4FtU8qKc";
+state.teamDrive = { fileId: null, fileName: null };
+let pickerLibLoaded = false;
+
+function ensurePickerLoaded(cb) {
+  if (pickerLibLoaded) { cb(); return; }
+  if (typeof gapi === "undefined") { setTimeout(() => ensurePickerLoaded(cb), 300); return; }
+  gapi.load("picker", () => { pickerLibLoaded = true; cb(); });
+}
+
+function openTeamFilePicker() {
+  if (!state.google.accessToken) { showErrorBanner("Sign in with Google first."); return; }
+  ensurePickerLoaded(() => {
+    const view = new google.picker.DocsView(google.picker.ViewId.DOCS).setMimeTypes("application/json");
+    const picker = new google.picker.PickerBuilder()
+      .setOAuthToken(state.google.accessToken)
+      .setDeveloperKey(GOOGLE_API_KEY)
+      .addView(view)
+      .setCallback(pickerCallback)
+      .build();
+    picker.setVisible(true);
+  });
+}
+async function pickerCallback(data) {
+  if (data.action !== google.picker.Action.PICKED) return;
+  const doc = data.docs[0];
+  await setTeamDriveFile(doc.id, doc.name);
+}
+
+async function createTeamDriveFile() {
+  if (!state.google.accessToken) { showErrorBanner("Sign in with Google first."); return; }
+  const metadata = { name: "BARP Team Data.json", mimeType: "application/json" };
+  const initialContent = JSON.stringify({ version: 1, attachments: [], entries: [], missions: [], runs: [], runGroups: [] }, null, 2);
+  const boundary = "barp-" + Date.now();
+  const body =
+    `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(metadata)}\r\n` +
+    `--${boundary}\r\nContent-Type: application/json\r\n\r\n${initialContent}\r\n` +
+    `--${boundary}--`;
+  try {
+    const res = await fetch("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${state.google.accessToken}`, "Content-Type": `multipart/related; boundary=${boundary}` },
+      body,
+    });
+    if (!res.ok) throw new Error(`Drive API returned ${res.status}`);
+    const file = await res.json();
+    await setTeamDriveFile(file.id, file.name);
+  } catch (e) {
+    showErrorBanner(`Couldn't create the team file: ${e.message}`);
+  }
+}
+
+async function setTeamDriveFile(fileId, fileName) {
+  state.teamDrive.fileId = fileId;
+  state.teamDrive.fileName = fileName;
+  await dbPut("meta", { key: "teamDriveFileId", value: fileId });
+  await dbPut("meta", { key: "teamDriveFileName", value: fileName });
+  renderDriveFileStatus();
+}
+async function loadTeamDriveFileSetting() {
+  const idRec = await dbGet("meta", "teamDriveFileId");
+  const nameRec = await dbGet("meta", "teamDriveFileName");
+  state.teamDrive.fileId = idRec?.value || null;
+  state.teamDrive.fileName = nameRec?.value || null;
+}
+function renderDriveFileStatus() {
+  const statusEl = document.getElementById("drive-file-status");
+  const actionsEl = document.getElementById("drive-file-actions");
+  if (!statusEl || !actionsEl) return;
+  const signedIn = !!state.google.accessToken && Date.now() < state.google.tokenExpiresAt;
+  if (!signedIn) {
+    statusEl.textContent = "Sign in with Google first.";
+    actionsEl.hidden = true;
+    return;
+  }
+  actionsEl.hidden = false;
+  statusEl.textContent = state.teamDrive.fileId
+    ? `Connected to "${state.teamDrive.fileName || "team file"}".`
+    : "No team file connected yet — create one (first time ever) or choose the one your team already made.";
+}
+document.getElementById("btn-drive-pick-file").addEventListener("click", openTeamFilePicker);
+document.getElementById("btn-drive-create-file").addEventListener("click", createTeamDriveFile);
 
 // ---------- Init ----------
 async function purgeOldTrash() {
   const THIRTY_DAYS = 30 * 24 * 60 * 60 * 1000;
-  const all = await dbGetAll("entries");
   const cutoff = Date.now() - THIRTY_DAYS;
-  for (const e of all) {
-    if (e.deleted && e.deletedAt && e.deletedAt < cutoff) await dbDelete("entries", e.id);
+  const isOld = (x) => x.deleted && x.deletedAt && x.deletedAt < cutoff;
+
+  for (const e of await dbGetAll("entries")) if (isOld(e)) await dbDelete("entries", e.id);
+  for (const a of await dbGetAll("attachments")) if (isOld(a)) await dbDelete("attachments", a.id);
+  for (const g of await dbGetAll("runGroups")) if (isOld(g)) await dbDelete("runGroups", g.id);
+  for (const r of await dbGetAll("runs")) if (isOld(r)) await dbDelete("runs", r.id);
+  for (const m of await dbGetAll("missions")) {
+    if (isOld(m)) { await dbDelete("missions", m.id); continue; }
+    const keptTasks = (m.tasks || []).filter((t) => !isOld(t));
+    if (keptTasks.length !== (m.tasks || []).length) { m.tasks = keptTasks; await dbPut("missions", m); }
   }
 }
 const equipmentInspectionInput = document.getElementById("input-skip-equipment-inspection");
@@ -3343,16 +3600,18 @@ async function loadInteractiveIterationsSetting() {
 
 async function initAll() {
   preloadAllSounds(); // fire-and-forget, decoding well ahead of any run starting
+  initGoogleAuth(); // fire-and-forget, retries on its own if the library hasn't loaded yet
   await purgeOldTrash();
   await loadAttachments();
   await loadMissions();
   await loadRunGroups();
   await loadRuns();
-  await loadSeasonName();
   await loadEquipmentInspectionSetting();
   await loadKeepGoingAfterBuzzerSetting();
   await loadInteractiveScoringSetting();
   await loadInteractiveIterationsSetting();
+  await loadTeamDriveFileSetting();
+  renderGoogleSignInStatus();
   document.getElementById("log-empty-state").hidden = state.attachments.length === 0 ? false : true;
 }
 initAll();

@@ -91,6 +91,12 @@
     <div id="rungroup-list" class="mission-list"></div>
 
     <div class="section-row" style="margin-top:28px;">
+      <h2>Recently Deleted</h2>
+    </div>
+    <p class="empty-sub">Deleting anything — attachments, log entries, runs, missions, tasks, or game runs — moves it here instead of erasing it right away. Restore it any time within 30 days; after that it's purged for good.</p>
+    <button class="btn btn-ghost btn-full" id="btn-recently-deleted">View Recently Deleted</button>
+
+    <div class="section-row" style="margin-top:28px;">
       <h2>Backup</h2>
     </div>
     <p class="empty-sub">Everything is stored only on this device. Export a backup file regularly so you don't lose it if this device is lost, reset, or the app data gets cleared.</p>
@@ -111,9 +117,20 @@
     <label class="checkbox-row checkbox-row-standalone"><input type="checkbox" id="input-interactive-iterations"> Interactive mode for logging attachment iterations (one step at a time, camera-first)</label>
 
     <div class="section-row" style="margin-top:28px;">
-      <h2>Notebook name</h2>
+      <h2>Google Account</h2>
     </div>
-    <input type="text" id="input-season-name" class="text-input" placeholder="e.g. Turtlebots &mdash; BIOGLOW" />
+    <p class="empty-sub" id="google-signin-status">Not signed in.</p>
+    <button class="btn btn-primary" id="btn-google-signin">Sign in with Google</button>
+    <button class="btn btn-ghost" id="btn-google-signout" hidden>Sign out</button>
+
+    <div class="section-row" style="margin-top:28px;">
+      <h2>Team Drive File</h2>
+    </div>
+    <p class="empty-sub" id="drive-file-status">Sign in with Google first.</p>
+    <div class="btn-group" id="drive-file-actions" hidden>
+      <button class="btn btn-ghost" id="btn-drive-pick-file">Choose existing team file</button>
+      <button class="btn btn-amber" id="btn-drive-create-file">Create new team file</button>
+    </div>
   </section>
 
 </main>
@@ -138,6 +155,8 @@
 <input type="file" id="file-import-missions" accept=".csv,text/csv" hidden />
 <input type="file" id="file-import-backup" accept="application/json" hidden />
 
+<script src="https://accounts.google.com/gsi/client" async defer></script>
+<script src="https://apis.google.com/js/api.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js"></script>
 <script src="app.js"></script>
 </body>
