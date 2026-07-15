@@ -3461,8 +3461,20 @@ document.getElementById("btn-google-signin").addEventListener("click", async () 
     }
   }
 });
-document.getElementById("btn-google-signout").addEventListener("click", async () => {
-  if (window.firebaseAuth) await window.firebaseFns.signOut(window.firebaseAuth);
+document.getElementById("btn-google-signout").addEventListener("click", () => {
+  openModal(`
+    <h2>Sign out?</h2>
+    <p class="empty-sub">You'll need to sign in again to keep syncing with the team — that may ask for 2-step verification again depending on your account.</p>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="m-cancel" type="button">Cancel</button>
+      <button class="btn btn-danger" id="m-confirm-signout" type="button">Sign Out</button>
+    </div>
+  `);
+  document.getElementById("m-cancel").addEventListener("click", closeModal);
+  document.getElementById("m-confirm-signout").addEventListener("click", async () => {
+    closeModal();
+    if (window.firebaseAuth) await window.firebaseFns.signOut(window.firebaseAuth);
+  });
 });
 
 // ---- Firestore sync ----
@@ -3516,6 +3528,7 @@ async function performFirestoreSync() {
 function startFirestoreListeners() {
   const { collection, onSnapshot } = window.firebaseFns;
   const db = window.firebaseDb;
+  setSyncStatus("Connecting…");
   FIRESTORE_COLLECTIONS.forEach((storeName) => {
     onSnapshot(collection(db, storeName), async (snapshot) => {
       let changed = false;
@@ -3525,7 +3538,8 @@ function startFirestoreListeners() {
         changed = true;
       }
       if (changed) await refreshAfterRemoteChange(storeName);
-    }, (e) => showErrorBanner(`Team sync listener failed: ${e.message}`));
+      setSyncStatus(`Synced ${new Date().toLocaleTimeString()}`);
+    }, (e) => { setSyncStatus("Sync failed — will retry on the next change."); showErrorBanner(`Team sync listener failed: ${e.message}`); });
   });
 }
 async function refreshAfterRemoteChange(storeName) {
