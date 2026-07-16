@@ -133,12 +133,14 @@ main { padding: 18px 16px 40px; max-width: 640px; margin: 0 auto; }
   border-radius: 4px 10px 10px 4px;
   padding: 10px 12px;
   display: flex;
-  gap: 12px;
+  flex-direction: column;
+  gap: 8px;
 }
-.entry-card img {
-  width: 74px; height: 74px; object-fit: cover; border-radius: 6px; border: 1px solid var(--line); flex: none;
+.entry-body-row { display: flex; gap: 12px; align-items: flex-start; }
+.entry-body-row img {
+  width: 64px; height: 64px; object-fit: cover; border-radius: 6px; border: 1px solid var(--line); flex: none;
 }
-.entry-body { flex: 1; min-width: 0; }
+.entry-fields { flex: 1; min-width: 0; }
 .entry-time { font-family: var(--mono); font-size: 0.9rem; font-weight: 600; color: var(--text); display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .entry-time-text { flex-wrap: wrap; }
 .entry-del-btn { flex: none; padding: 2px 4px; font-size: 0.95rem; }
@@ -336,10 +338,6 @@ main { padding: 18px 16px 40px; max-width: 640px; margin: 0 auto; }
   color: var(--text-soft); margin-bottom: 1px;
 }
 .entry-field-value { display: block; word-break: break-word; }
-.entry-field-value.truncated {
-  display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical;
-  overflow: hidden; white-space: normal;
-}
 .entry-showmore-btn {
   display: block; background: none; border: none; padding: 2px 0 0;
   color: var(--moss); font-weight: 700; font-size: 0.78rem; cursor: pointer;

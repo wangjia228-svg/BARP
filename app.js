@@ -572,10 +572,13 @@ function renderAttachmentChips() {
 document.getElementById("sort-select").addEventListener("change", renderEntryList);
 
 function entryFieldHTML(label, text, uid) {
-  const truncatable = text.length > 60;
+  const SHOW_MORE_TRIGGER = 80; // roughly 2 lines of text at this font size/column width
+  const TRUNCATE_TO = 60; // roughly 1.5 lines — leaves room for "… Show more" on that same line
+  const truncatable = text.length > SHOW_MORE_TRIGGER;
+  const shortText = truncatable ? text.slice(0, TRUNCATE_TO).trimEnd() + "…" : text;
   return `<div class="entry-field">
     <span class="entry-field-label">${esc(label)}</span>
-    <span class="entry-field-value${truncatable ? " truncated" : ""}" id="${uid}">${esc(text)}</span>
+    <span class="entry-field-value" id="${uid}" data-full="${esc(text)}" data-short="${esc(shortText)}">${esc(truncatable ? shortText : text)}</span>
     ${truncatable ? `<button type="button" class="entry-showmore-btn" data-target="${uid}">Show more</button>` : ""}
   </div>`;
 }
@@ -584,16 +587,18 @@ function entryCardHTML(entry, attachmentLabel) {
   const whatHTML = entry.whatChanged ? entryFieldHTML("What changed", entry.whatChanged, `efv-${entry.id}-what`) : "";
   const whyHTML = entry.whyChanged ? entryFieldHTML("Why changed", entry.whyChanged, `efv-${entry.id}-why`) : "";
   return `
-    ${entry.photo ? `<img src="${entry.photo}" alt="">` : ""}
-    <div class="entry-body">
-      <div class="entry-time">
-        <span class="entry-time-text">${fmtDate(entry.timestamp)}
-          ${attachmentLabel ? ` &middot; <span class="entry-att-tag">${esc(attachmentLabel)}</span>` : ""}
-          ${sizeLabel ? ` &middot; <span class="size-badge size-${entry.size}">${esc(sizeLabel)}</span>` : ""}
-        </span>
-        <button class="btn-icon entry-del-btn" data-id="${entry.id}" title="Delete">&#128465;&#65039;</button>
+    <div class="entry-time">
+      <span class="entry-time-text">${fmtDate(entry.timestamp)}
+        ${attachmentLabel ? ` &middot; <span class="entry-att-tag">${esc(attachmentLabel)}</span>` : ""}
+        ${sizeLabel ? ` &middot; <span class="size-badge size-${entry.size}">${esc(sizeLabel)}</span>` : ""}
+      </span>
+      <button class="btn-icon entry-del-btn" data-id="${entry.id}" title="Delete">&#128465;&#65039;</button>
+    </div>
+    <div class="entry-body-row">
+      ${entry.photo ? `<img src="${entry.photo}" alt="">` : ""}
+      <div class="entry-fields">
+        ${whatHTML}${whyHTML}
       </div>
-      ${whatHTML}${whyHTML}
     </div>`;
 }
 
@@ -643,8 +648,9 @@ async function renderEntryList() {
     card.querySelectorAll(".entry-showmore-btn").forEach((btn) => {
       btn.addEventListener("click", () => {
         const target = document.getElementById(btn.dataset.target);
-        const stillTruncated = target.classList.toggle("truncated");
-        btn.textContent = stillTruncated ? "Show more" : "Show less";
+        const expanded = target.textContent === target.dataset.full;
+        target.textContent = expanded ? target.dataset.short : target.dataset.full;
+        btn.textContent = expanded ? "Show more" : "Show less";
       });
     });
     list.appendChild(card);
@@ -1368,6 +1374,20 @@ async function saveAllOrder() {
       if (m) { m.order = idx; m.runGroupId = gid; }
     });
   });
+  // Missions dragged into (or left in) the Unassigned bucket get their
+  // runGroupId cleared — otherwise they'd still silently point at whatever
+  // run they used to belong to, even though they visually moved out of it.
+  const unassignedEl = document.querySelector("#rungroup-list > [data-unassigned]");
+  if (unassignedEl) {
+    const missionListContainer = unassignedEl.querySelector(":scope > .task-list");
+    if (missionListContainer) {
+      const missionEls = [...missionListContainer.querySelectorAll(":scope > [data-mid]")];
+      missionEls.forEach((mEl, idx) => {
+        const m = state.missions.find((x) => x.id === mEl.dataset.mid);
+        if (m) { m.order = idx; m.runGroupId = null; }
+      });
+    }
+  }
 
   const allMissionEls = [...document.querySelectorAll("[data-mid]")];
   for (const mEl of allMissionEls) {
@@ -1452,78 +1472,89 @@ function renderRunGroups() {
     list.appendChild(wrap);
   });
 
-  // Second pass: now that every run's mission container exists, wire up
-  // cross-run dragging for every mission row at once.
-  if (editing) {
-    missionRows.forEach(({ row }) => attachMissionDrag(row, missionContainers));
-  }
-
   const orphans = state.missions.filter((m) => !state.runGroups.some((g) => g.id === m.runGroupId));
+  let orphanWrap = null;
   if (orphans.length) {
-    const wrap = document.createElement("div");
-    wrap.className = "mission-group unassigned-group";
-    const expanded = state.expandedRunGroups.has("unassigned");
-    wrap.innerHTML = `
-      <div class="mission-row mission-group-head mission-expand-target" data-act="expand">
-        <span class="mission-expand-chevron">${expanded ? "&#9660;" : "&#9654;"}</span>
+    orphanWrap = document.createElement("div");
+    orphanWrap.className = "mission-group unassigned-group";
+    orphanWrap.dataset.unassigned = "1";
+    const orphanExpanded = editing ? true : state.expandedRunGroups.has("unassigned");
+    orphanWrap.innerHTML = `
+      <div class="mission-row mission-group-head${editing ? "" : " mission-expand-target"}" data-act="expand">
+        <span class="mission-expand-chevron">${orphanExpanded ? "&#9660;" : "&#9654;"}</span>
         <div class="m-info">
           <div class="m-name">Unassigned</div>
           <div class="m-sub">${orphans.length} mission${orphans.length === 1 ? "" : "s"} without a run</div>
         </div>
       </div>
-      <div class="task-list" ${expanded ? "" : "hidden"}></div>
+      <div class="task-list" ${orphanExpanded ? "" : "hidden"}></div>
     `;
-    wrap.querySelector('[data-act="expand"]').addEventListener("click", () => {
-      if (expanded) state.expandedRunGroups.delete("unassigned"); else state.expandedRunGroups.add("unassigned");
-      renderRunGroups();
-    });
-    if (expanded) {
-      const container = wrap.querySelector(".task-list");
-      renderOrphanMissions(container, orphans);
+    if (!editing) {
+      orphanWrap.querySelector('[data-act="expand"]').addEventListener("click", () => {
+        if (orphanExpanded) state.expandedRunGroups.delete("unassigned"); else state.expandedRunGroups.add("unassigned");
+        renderRunGroups();
+      });
     }
-    list.appendChild(wrap);
+    if (orphanExpanded) {
+      const orphanContainer = orphanWrap.querySelector(".task-list");
+      missionContainers.push(orphanContainer);
+      renderOrphanMissions(orphanContainer, orphans, missionRows);
+    }
   }
+
+  // Second pass: now that every run's (and Unassigned's) mission container
+  // exists, wire up cross-run dragging for every mission row at once — this
+  // is what lets a mission be dragged between two real runs, or in/out of
+  // Unassigned, not just reordered within its current list.
+  if (editing) {
+    missionRows.forEach(({ row }) => attachMissionDrag(row, missionContainers));
+  }
+
+  if (orphanWrap) list.appendChild(orphanWrap);
 }
 
-function renderOrphanMissions(container, orphans) {
+function renderOrphanMissions(container, orphans, missionRows) {
+  const editing = state.editingAllOrder;
   container.innerHTML = "";
   orphans.forEach((m) => {
-    const expanded = state.expandedMissions.has(m.id);
+    const expanded = editing ? true : state.expandedMissions.has(m.id);
     const row = document.createElement("div");
     row.className = "mission-group";
     row.dataset.mid = m.id;
     row.innerHTML = `
-      <div class="mission-row mission-group-head mission-expand-target" data-act="expand">
+      <div class="mission-row mission-group-head${editing ? "" : " mission-expand-target"}" data-act="expand">
+        ${editing ? `<span class="drag-handle">&#9776;</span>` : ""}
         <span class="mission-expand-chevron">${expanded ? "&#9660;" : "&#9654;"}</span>
         <div class="m-info">
           <div class="m-name">${esc(m.name)}</div>
           <div class="m-sub">${visibleTasks(m).length} task${visibleTasks(m).length === 1 ? "" : "s"} · max ${missionMaxPoints(m)} pts</div>
         </div>
-        <button class="btn-icon btn-icon-add" data-act="add-task" title="Add a task">&#43;</button>
-        <button class="btn-icon" data-act="edit">&#9998;&#65039;</button>
-        <button class="btn-icon" data-act="del">&#128465;&#65039;</button>
+        ${editing ? `<button class="btn-icon btn-icon-add" data-act="add-task" title="Add a task">&#43;</button><button class="btn-icon" data-act="edit">&#9998;&#65039;</button><button class="btn-icon" data-act="del">&#128465;&#65039;</button>` : ""}
       </div>
       <div class="task-list" ${expanded ? "" : "hidden"}></div>
     `;
-    row.querySelector('[data-act="expand"]').addEventListener("click", (e) => {
-      if (e.target.closest('[data-act="edit"], [data-act="del"], [data-act="add-task"]')) return;
-      if (expanded) state.expandedMissions.delete(m.id); else state.expandedMissions.add(m.id);
-      renderRunGroups();
-    });
-    row.querySelector('[data-act="add-task"]').addEventListener("click", () => openTaskModal(m, null));
-    row.querySelector('[data-act="edit"]').addEventListener("click", () => openMissionNameModal(m, null));
-    row.querySelector('[data-act="del"]').addEventListener("click", async () => {
-      if (!confirm(`Delete mission "${m.name}" and all its tasks?`)) return;
-      m.deleted = true;
-      m.deletedAt = Date.now();
-      await dbPut("missions", m);
-      await loadMissions();
-      renderRunGroups();
-      syncToTeamDrive();
-      showUndoToast(`Deleted mission "${m.name}".`, async () => {
-        await restoreDeletedMission(m.id);
+    if (!editing) {
+      row.querySelector('[data-act="expand"]').addEventListener("click", (e) => {
+        if (expanded) state.expandedMissions.delete(m.id); else state.expandedMissions.add(m.id);
+        renderRunGroups();
       });
-    });
+    } else {
+      row.querySelector('[data-act="add-task"]').addEventListener("click", () => openTaskModal(m, null));
+      row.querySelector('[data-act="edit"]').addEventListener("click", () => openMissionNameModal(m, null));
+      row.querySelector('[data-act="del"]').addEventListener("click", async () => {
+        if (!confirm(`Delete mission "${m.name}" and all its tasks?`)) return;
+        m.deleted = true;
+        m.deletedAt = Date.now();
+        await dbPut("missions", m);
+        await loadMissions();
+        renderRunGroups();
+        syncToTeamDrive();
+        showUndoToast(`Deleted mission "${m.name}".`, async () => {
+          await restoreDeletedMission(m.id);
+        });
+      });
+      if (missionRows) missionRows.push({ row, mission: m });
+    }
     if (expanded) renderTaskList(row.querySelector(".task-list"), m);
     container.appendChild(row);
   });
@@ -1618,11 +1649,6 @@ function openMissionNameModal(m, group) {
     <h2>${isEdit ? "Edit mission" : "New mission"}</h2>
     <div class="field"><label>Official mission number</label><input class="text-input" id="m-mission-number" type="number" value="${isEdit && m.number != null ? m.number : ""}" placeholder="e.g. 7"></div>
     <div class="field"><label>Mission name</label><input class="text-input" id="m-mission-name" value="${isEdit ? esc(m.name) : ""}" placeholder="e.g. Coral nursery"></div>
-    <div class="field"><label>Run</label>
-      <select class="text-input" id="m-mission-run">
-        ${state.runGroups.map((g) => `<option value="${g.id}" ${g.id === currentGroupId ? "selected" : ""}>${esc(g.name)}</option>`).join("")}
-      </select>
-    </div>
     <div class="modal-actions">
       <button class="btn btn-ghost" id="m-cancel" type="button">Cancel</button>
       <button class="btn btn-primary" id="m-save" type="button">Save</button>
@@ -1633,7 +1659,7 @@ function openMissionNameModal(m, group) {
     const name = document.getElementById("m-mission-name").value.trim();
     if (!name) { alert("Name this mission."); return; }
     const numberVal = document.getElementById("m-mission-number").value.trim();
-    const newGroupId = document.getElementById("m-mission-run").value;
+    const newGroupId = currentGroupId;
     const record = isEdit ? m : { id: crypto.randomUUID(), order: 9999, tasks: [], taskSeq: 0 };
     record.name = name;
     record.number = numberVal === "" ? null : Number(numberVal);
@@ -3374,11 +3400,20 @@ document.getElementById("btn-export-backup").addEventListener("click", async () 
 });
 
 document.getElementById("btn-import-backup").addEventListener("click", () => document.getElementById("file-import-backup").click());
-document.getElementById("btn-reset-db").addEventListener("click", () => {
-  const msg = state.firebaseUser
-    ? "This clears everything stored on this device. If you're signed in and synced (which you are), your team's data will pull back down automatically after — but anything made just now or while offline, before it had a chance to sync, will be lost for good."
-    : "This clears everything stored on this device. You're not signed in, so nothing will pull back down automatically — sign in first if you want your data to come back afterward.";
-  if (!confirm(msg)) return;
+document.getElementById("btn-reset-db").addEventListener("click", async () => {
+  if (state.firebaseUser) {
+    setSyncStatus("Syncing before reset…");
+    try {
+      await performFirestoreSync();
+      setSyncStatus("Connected");
+      if (!confirm("Everything on this device has just been synced to your team's cloud database. Reset local data now? It'll pull back down automatically the next time this device signs in.")) return;
+    } catch (e) {
+      setSyncStatus("Sync failed — will retry on the next change.");
+      if (!confirm(`Couldn't confirm everything is synced (${e.message}). If you reset now, anything not already synced could be lost for good. Reset anyway?`)) return;
+    }
+  } else {
+    if (!confirm("This clears everything stored on this device. You're not signed in, so nothing will pull back down automatically — sign in first if you want your data to come back afterward. Reset anyway?")) return;
+  }
   resetLocalDatabase();
 });
 document.getElementById("file-import-backup").addEventListener("change", async (e) => {

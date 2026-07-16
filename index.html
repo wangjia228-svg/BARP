@@ -103,9 +103,9 @@
     <div class="btn-group">
       <button class="btn btn-ghost" id="btn-export-backup">Export full backup (.json)</button>
       <button class="btn btn-ghost" id="btn-import-backup">Restore from backup file</button>
-      <button class="btn btn-danger" id="btn-reset-db">Reset local data</button>
     </div>
-    <p class="empty-sub">Only reset if the app is stuck (e.g. a database error banner). This erases everything stored on this device — but if you're signed in and synced, anything already pushed to the team's cloud database will just come back automatically once you sign in again. Only truly unsynced changes are lost for good, so export a manual backup first if you're not sure.</p>
+    <button class="btn btn-danger btn-full" id="btn-reset-db" style="margin-top:8px;">Reset local data</button>
+    <p class="empty-sub">Use this if the app is stuck (e.g. a database error). This erases all local storage — but as long as you're signed in, you're fine. If not, save a backup first.</p>
 
     <div class="section-row" style="margin-top:28px;">
       <h2>App Settings</h2>
