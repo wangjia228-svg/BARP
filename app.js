@@ -183,8 +183,11 @@ window.addEventListener("unhandledrejection", (e) => showErrorBanner(e.reason?.m
 // between them (used for missions moving between runs / Unassigned) —
 // leave it unset for a container whose items should only reorder in place
 // (attachments, run groups, tasks within one mission).
+const sortableInstances = new WeakMap(); // container element -> its current Sortable instance
 function makeSortable(container, { group, onEnd } = {}) {
-  return Sortable.create(container, {
+  const existing = sortableInstances.get(container);
+  if (existing) { existing.destroy(); sortableInstances.delete(container); }
+  const instance = Sortable.create(container, {
     handle: ".drag-handle",
     animation: 150,
     group,
@@ -192,6 +195,8 @@ function makeSortable(container, { group, onEnd } = {}) {
     swapThreshold: 0.65,
     onEnd,
   });
+  sortableInstances.set(container, instance);
+  return instance;
 }
 function reorderToolbarHTML(editing, prefix) {
   return editing
@@ -2847,7 +2852,7 @@ function renderBreakdownTimingTab() {
 // ==========================================================
 // ANALYSIS TAB — across every completed run, not just one
 // ==========================================================
-state.analysis = { subTab: "trend", missionSortKey: "order", expandedMissionIds: new Set() };
+state.analysis = { subTab: "trend", expandedMissionIds: new Set() };
 
 function renderAnalysisTab() {
   document.querySelectorAll(".analysis-tab-btn").forEach((btn) => {
@@ -2932,70 +2937,85 @@ function renderScoreTrendChart() {
   `;
 }
 
+// Same red-yellow-green palette as the XLSX export's conditional formatting,
+// so the in-app view and the exported spreadsheet read the same way.
+function heatColor(t) {
+  t = t == null ? 0.5 : Math.max(0, Math.min(1, t));
+  const red = [0xF8, 0x69, 0x6B], yellow = [0xFF, 0xEB, 0x84], green = [0x63, 0xBE, 0x7B];
+  const [c1, c2, localT] = t < 0.5 ? [red, yellow, t / 0.5] : [yellow, green, (t - 0.5) / 0.5];
+  const mix = (i) => Math.round(c1[i] + (c2[i] - c1[i]) * localT);
+  return `rgb(${mix(0)},${mix(1)},${mix(2)})`;
+}
+// Normalizes a value to 0 (worst) - 1 (best) relative to the min/max across
+// every mission (or task) being shown — "invert" is for stats where lower is
+// actually better (time taken).
+function heatFrac(value, values, invert) {
+  if (value == null) return null;
+  const real = values.filter((v) => v != null);
+  if (!real.length) return null;
+  const min = Math.min(...real), max = Math.max(...real);
+  if (min === max) return 0.5;
+  const t = (value - min) / (max - min);
+  return invert ? 1 - t : t;
+}
+function heatCellHTML(text, frac) {
+  return frac == null
+    ? `<td>${text}</td>`
+    : `<td style="background:${heatColor(frac)}; color:#1a1a1a;">${text}</td>`;
+}
+
 function renderMissionsAnalysisTable() {
   const body = document.getElementById("analysis-missions-body");
-  const sortKey = state.analysis.missionSortKey;
-  const data = computeMissionAnalytics().sort((a, b) => {
-    if (sortKey === "order") return a.order - b.order;
-    if (sortKey === "successRate") return (b.successRate ?? -1) - (a.successRate ?? -1);
-    if (sortKey === "pointsPerSec") return (b.pointsPerSec ?? -1) - (a.pointsPerSec ?? -1);
-    if (sortKey === "time") return (b.avgTimeMs ?? -1) - (a.avgTimeMs ?? -1);
-    return 0;
-  });
   if (!state.runs.some((r) => !r.inProgress)) {
     body.innerHTML = `<p class="empty-sub">No completed game runs yet.</p>`;
     return;
   }
-  body.innerHTML = `
-    <div class="field"><label>Sort by</label>
-      <select class="text-input" id="analysis-sort-select">
-        <option value="order" ${sortKey === "order" ? "selected" : ""}>Game run order</option>
-        <option value="successRate" ${sortKey === "successRate" ? "selected" : ""}>Success rate</option>
-        <option value="pointsPerSec" ${sortKey === "pointsPerSec" ? "selected" : ""}>Points per second</option>
-        <option value="time" ${sortKey === "time" ? "selected" : ""}>Time taken</option>
-      </select>
-    </div>
-    <div class="mission-list" id="analysis-mission-rows"></div>
-  `;
-  document.getElementById("analysis-sort-select").addEventListener("change", (e) => {
-    state.analysis.missionSortKey = e.target.value;
-    renderMissionsAnalysisTable();
-  });
-  const rowsContainer = document.getElementById("analysis-mission-rows");
-  data.forEach(({ mission, successRate, pointsPerSec, avgTimeMs }) => {
-    const expanded = state.analysis.expandedMissionIds.has(mission.id);
-    const row = document.createElement("div");
-    row.className = "mission-group";
-    row.innerHTML = `
-      <div class="analysis-mission-row-head mission-row">
-        <span class="mission-expand-chevron">${expanded ? "&#9660;" : "&#9654;"}</span>
-        <div class="m-info"><div class="m-name">${esc(mission.name)}</div></div>
-        <div class="analysis-stat"><span class="analysis-stat-val">${fmtPct(successRate)}</span><span class="analysis-stat-label">Success</span></div>
-        <div class="analysis-stat"><span class="analysis-stat-val">${fmtPPS(pointsPerSec)}</span><span class="analysis-stat-label">Pts/sec</span></div>
-        <div class="analysis-stat"><span class="analysis-stat-val">${avgTimeMs != null ? fmtDuration(avgTimeMs) : "—"}</span><span class="analysis-stat-label">Time</span></div>
-      </div>
-      <div class="analysis-task-rows" ${expanded ? "" : "hidden"}></div>
+  const data = computeMissionAnalytics().sort((a, b) => a.order - b.order);
+  const successVals = data.map((d) => d.successRate);
+  const ppsVals = data.map((d) => d.pointsPerSec);
+  const timeVals = data.map((d) => d.avgTimeMs);
+
+  const rows = data.map(({ mission, successRate, pointsPerSec, avgTimeMs }) => {
+    const expanded = state.analysis.expandedMissionIds.has(String(mission.id));
+    let taskRowsHTML = "";
+    if (expanded) {
+      const allTaskRates = state.missions.flatMap((m) => computeTaskAnalytics(m).map((t) => t.successRate));
+      const taskData = computeTaskAnalytics(mission).sort((a, b) => a.order - b.order);
+      taskRowsHTML = taskData.length
+        ? `<tr><td colspan="4" style="padding:0;">
+             <table class="analysis-subtable">
+               ${taskData.map(({ task, successRate: tsr }) =>
+                 `<tr><td class="analysis-subtable-name">${esc(task.name)}</td>${heatCellHTML(fmtPct(tsr), heatFrac(tsr, allTaskRates, false))}</tr>`
+               ).join("")}
+             </table>
+           </td></tr>`
+        : `<tr><td colspan="4"><p class="empty-sub" style="margin:6px 0;">No tasks in this mission.</p></td></tr>`;
+    }
+    return `
+      <tr class="analysis-mission-row" data-mid="${mission.id}">
+        <td class="analysis-mission-name"><span class="mission-expand-chevron">${expanded ? "&#9660;" : "&#9654;"}</span>${esc(mission.name)}</td>
+        ${heatCellHTML(fmtPct(successRate), heatFrac(successRate, successVals, false))}
+        ${heatCellHTML(fmtPPS(pointsPerSec), heatFrac(pointsPerSec, ppsVals, false))}
+        ${heatCellHTML(avgTimeMs != null ? fmtDuration(avgTimeMs) : "—", heatFrac(avgTimeMs, timeVals, true))}
+      </tr>
+      ${taskRowsHTML}
     `;
-    row.querySelector(".analysis-mission-row-head").addEventListener("click", () => {
-      if (expanded) state.analysis.expandedMissionIds.delete(mission.id);
-      else state.analysis.expandedMissionIds.add(mission.id);
+  }).join("");
+
+  body.innerHTML = `
+    <table class="analysis-table">
+      <thead><tr><th>Mission</th><th>Success</th><th>Pts/sec</th><th>Time</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    <p class="empty-sub">Green = best, red = worst, relative to your other missions. Tap a mission to see its tasks.</p>
+  `;
+  body.querySelectorAll(".analysis-mission-row").forEach((tr) => {
+    tr.addEventListener("click", () => {
+      const mid = tr.dataset.mid;
+      if (state.analysis.expandedMissionIds.has(mid)) state.analysis.expandedMissionIds.delete(mid);
+      else state.analysis.expandedMissionIds.add(mid);
       renderMissionsAnalysisTable();
     });
-    if (expanded) {
-      const taskContainer = row.querySelector(".analysis-task-rows");
-      const taskData = computeTaskAnalytics(mission).sort((a, b) => {
-        if (sortKey === "successRate") return (b.successRate ?? -1) - (a.successRate ?? -1);
-        return a.order - b.order; // pointsPerSec/time don't exist per-task — fall back to task order
-      });
-      if (!taskData.length) {
-        taskContainer.innerHTML = `<p class="empty-sub">No tasks in this mission.</p>`;
-      } else {
-        taskContainer.innerHTML = taskData.map(({ task, successRate }) =>
-          `<div class="analysis-task-row"><span>${esc(task.name)}</span><span>${fmtPct(successRate)}</span></div>`
-        ).join("");
-      }
-    }
-    rowsContainer.appendChild(row);
   });
 }
 

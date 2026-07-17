@@ -544,13 +544,25 @@ main { padding: 18px 16px 40px; max-width: 640px; margin: 0 auto; }
   padding: 9px 0; cursor: pointer;
 }
 .analysis-tab-btn.active { background: var(--moss); color: var(--paper); border-color: var(--moss); }
-.analysis-mission-row { display: flex; flex-direction: column; }
-.analysis-mission-row-head { display: flex; align-items: center; gap: 10px; cursor: pointer; }
-.analysis-stat { text-align: center; flex: none; width: 58px; }
-.analysis-stat-val { display: block; font-family: var(--mono); font-weight: 700; font-size: 0.95rem; color: var(--text); }
-.analysis-stat-label { display: block; font-size: 0.62rem; color: var(--text-soft); text-transform: uppercase; letter-spacing: 0.02em; }
-.analysis-task-rows { margin: 8px 0 4px 20px; display: flex; flex-direction: column; gap: 6px; }
-.analysis-task-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 6px 10px; background: var(--paper); border: 1px solid var(--line); border-radius: 8px; font-size: 0.85rem; }
+.analysis-table {
+  width: 100%; border-collapse: collapse; font-size: 0.85rem; background: var(--paper-2);
+  border: 1px solid var(--line); border-radius: 10px; overflow: hidden;
+}
+.analysis-table th {
+  text-align: left; font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.02em;
+  color: var(--text-soft); padding: 8px 10px; background: var(--paper-3); border-bottom: 1px solid var(--line);
+}
+.analysis-table th:not(:first-child), .analysis-table td:not(:first-child) { text-align: center; }
+.analysis-table td { padding: 8px 10px; border-bottom: 1px solid var(--line); font-family: var(--mono); }
+.analysis-mission-row { cursor: pointer; }
+.analysis-mission-row:active { opacity: 0.85; }
+.analysis-mission-name {
+  font-family: var(--body); font-weight: 600; color: var(--text) !important; background: none !important;
+}
+.mission-expand-chevron { display: inline-block; width: 16px; color: var(--moss); }
+.analysis-subtable { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+.analysis-subtable-name { padding: 6px 10px 6px 30px; color: var(--text-soft); border-bottom: 1px solid var(--line); }
+.analysis-subtable td:not(.analysis-subtable-name) { padding: 6px 10px; text-align: center; font-family: var(--mono); border-bottom: 1px solid var(--line); }
 .brk-readonly button { pointer-events: none; }
 .brk-transition-row { font-style: normal; font-size: 1.05rem; font-weight: 600; color: var(--text); margin: 6px 0 18px; }
 .gfs-task-list { display: flex; flex-direction: column; gap: 8px; }
