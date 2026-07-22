@@ -511,7 +511,7 @@ function renderAttachmentChips() {
   state.attachments.forEach((att) => {
     const chip = document.createElement("button");
     chip.className = "chip" + (state.selectedAttachmentIds.has(att.id) ? " active" : "");
-    chip.innerHTML = `<span class="chip-num">#${esc(att.number)}</span>${esc(att.name)}`;
+    chip.innerHTML = att.isBaseRobot ? esc(att.name) : `<span class="chip-num">#${esc(att.number)}</span>${esc(att.name)}`;
     chip.addEventListener("click", async () => {
       if (state.selectedAttachmentIds.has(att.id)) state.selectedAttachmentIds.delete(att.id);
       else state.selectedAttachmentIds.add(att.id);
