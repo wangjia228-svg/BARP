@@ -73,6 +73,19 @@ main { padding: 18px 16px 40px; max-width: 640px; margin: 0 auto; }
 .view { animation: fadein 0.15s ease-out; }
 @keyframes fadein { from { opacity: 0; transform: translateY(4px);} to { opacity: 1; transform: none; } }
 
+.settings-layout { display: flex; gap: 14px; align-items: flex-start; }
+.settings-sidebar {
+  display: flex; flex-direction: column; gap: 6px; flex: none; width: 96px;
+  position: sticky; top: 0;
+}
+.settings-sidebar-btn {
+  background: var(--paper-2); border: 1px solid var(--line); border-radius: 8px;
+  color: var(--text-soft); font-family: var(--body); font-weight: 600; font-size: 0.78rem;
+  padding: 10px 6px; cursor: pointer; text-align: center; line-height: 1.25;
+}
+.settings-sidebar-btn.active { background: var(--moss); color: var(--paper); border-color: var(--moss); }
+.settings-content { flex: 1; min-width: 0; }
+
 .section-row {
   display: flex;
   align-items: center;
@@ -137,9 +150,6 @@ main { padding: 18px 16px 40px; max-width: 640px; margin: 0 auto; }
   gap: 8px;
 }
 .entry-body-row { display: flex; gap: 12px; align-items: flex-start; }
-.entry-body-row img {
-  width: 64px; height: 64px; object-fit: cover; border-radius: 6px; border: 1px solid var(--line); flex: none;
-}
 .entry-fields { flex: 1; min-width: 0; }
 .entry-time { font-family: var(--mono); font-size: 0.9rem; font-weight: 600; color: var(--text); display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .entry-time-text { flex-wrap: wrap; }
@@ -337,11 +347,44 @@ main { padding: 18px 16px 40px; max-width: 640px; margin: 0 auto; }
   display: block; font-size: 0.66rem; text-transform: uppercase; letter-spacing: 0.03em;
   color: var(--text-soft); margin-bottom: 1px;
 }
-.entry-field-value { display: block; word-break: break-word; }
-.entry-showmore-btn {
-  display: block; background: none; border: none; padding: 2px 0 0;
-  color: var(--moss); font-weight: 700; font-size: 0.78rem; cursor: pointer;
+.entry-field-value-clamped {
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden; word-break: break-word;
 }
+
+/* Multi-photo thumbnail strip (used in Record Iteration modals) */
+.photo-strip { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+.photo-strip-item { position: relative; flex: none; }
+.photo-strip-item .photo-preview { width: 84px; height: 84px; object-fit: cover; border-radius: 8px; border: 1px solid var(--line); }
+.photo-strip-remove {
+  position: absolute; top: -6px; right: -6px; width: 22px; height: 22px; border-radius: 50%;
+  background: var(--coral); color: #fff; border: 2px solid var(--paper); font-size: 0.7rem;
+  display: flex; align-items: center; justify-content: center; cursor: pointer;
+}
+
+/* Entry card thumbnail with a "+N more photos" badge */
+.entry-thumb-wrap { position: relative; flex: none; }
+.entry-thumb-wrap img { width: 64px; height: 64px; object-fit: cover; border-radius: 6px; border: 1px solid var(--line); }
+.entry-thumb-count {
+  position: absolute; bottom: -4px; right: -4px; background: var(--ink-deep); color: var(--paper);
+  font-size: 0.62rem; font-weight: 700; padding: 1px 5px; border-radius: 8px;
+}
+.entry-expand-btn { flex: none; padding: 2px 4px; font-size: 0.95rem; }
+
+/* Full-screen entry detail view */
+.entry-detail-image-wrap { position: relative; display: flex; justify-content: center; }
+.entry-detail-image { max-width: 100%; max-height: 50vh; border-radius: 10px; object-fit: contain; }
+.entry-detail-arrow {
+  position: absolute; top: 50%; transform: translateY(-50%);
+  width: 40px; height: 40px; border-radius: 50%; border: none;
+  background: rgba(27,58,47,0.55); color: #fff; font-size: 1.6rem; line-height: 1;
+  display: flex; align-items: center; justify-content: center; cursor: pointer;
+}
+.entry-detail-arrow-left { left: 8px; }
+.entry-detail-arrow-right { right: 8px; }
+.entry-detail-dots { position: absolute; bottom: 8px; left: 50%; transform: translateX(-50%); display: flex; gap: 6px; }
+.entry-detail-dot { width: 7px; height: 7px; border-radius: 50%; background: rgba(255,255,255,0.5); }
+.entry-detail-dot.active { background: #fff; }
 
 /* --- Added: mission groups with nested tasks --- */
 .mission-group-head { margin-bottom: 0; }
@@ -449,8 +492,6 @@ main { padding: 18px 16px 40px; max-width: 640px; margin: 0 auto; }
   color: var(--paper); font-size: 1.1rem; cursor: pointer;
 }
 .iter-shutter-spacer { width: 40px; flex: none; }
-.iter-photo-preview-big { width: 100%; }
-.iter-photo-preview-big img { width: 100%; max-height: 60vh; object-fit: contain; border-radius: 12px; background: #000; display: block; }
 .iter-dictate-btn {
   width: 150px; height: 150px; border-radius: 50%; flex: none;
   background: var(--moss); border: none; color: var(--paper); cursor: pointer;

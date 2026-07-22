@@ -31,6 +31,7 @@
       <button class="btn btn-amber" id="btn-record-iteration">+ Record Iteration</button>
     </div>
     <div id="iteration-total-line" class="iteration-total-line"></div>
+    <div id="base-robot-iteration-total-line" class="iteration-total-line"></div>
 
     <div class="filter-row">
       <div id="attachment-chips" class="chip-row"></div>
@@ -92,63 +93,76 @@
 
   <!-- SETUP VIEW -->
   <section class="view" id="view-setup" hidden>
-    <div class="section-row">
-      <h2>Attachments</h2>
-      <div id="attachment-order-toolbar-top" class="order-toolbar-top"></div>
-    </div>
-    <div id="attachment-setup-list" class="mission-list"></div>
+    <div class="settings-layout">
+      <nav class="settings-sidebar">
+        <button type="button" class="settings-sidebar-btn active" data-settings-section="general">General</button>
+        <button type="button" class="settings-sidebar-btn" data-settings-section="account">Account &amp; Backup</button>
+      </nav>
+      <div class="settings-content">
+        <div id="settings-section-general" class="settings-section">
+          <div class="section-row">
+            <h2>Attachments</h2>
+            <div id="attachment-order-toolbar-top" class="order-toolbar-top"></div>
+          </div>
+          <div id="base-robot-row" class="mission-list" style="margin-bottom:10px;"></div>
+          <div id="attachment-setup-list" class="mission-list"></div>
 
-    <div class="section-row" style="margin-top:28px;">
-      <h2>Runs</h2>
-      <div id="order-toolbar-top" class="order-toolbar-top"></div>
-    </div>
-    <div id="rungroup-list" class="mission-list"></div>
+          <div class="section-row" style="margin-top:28px;">
+            <h2>Runs</h2>
+            <div id="order-toolbar-top" class="order-toolbar-top"></div>
+          </div>
+          <div id="rungroup-list" class="mission-list"></div>
 
-    <div class="section-row" style="margin-top:28px;">
-      <h2>Recently Deleted</h2>
-    </div>
-    <p class="empty-sub">Deleting anything — attachments, log entries, runs, missions, tasks, or game runs — moves it here instead of erasing it right away. Restore it any time within 30 days; after that it's purged for good.</p>
-    <button class="btn btn-ghost btn-full" id="btn-recently-deleted">View Recently Deleted</button>
+          <div class="section-row" style="margin-top:28px;">
+            <h2>App Settings</h2>
+          </div>
+          <p class="empty-sub">Controls how practice game runs are scored and timed, and how attachment iterations get logged.</p>
+          <label class="checkbox-row checkbox-row-standalone"><input type="checkbox" id="input-skip-equipment-inspection" checked> Don't ask about the Equipment Inspection bonus before each run (it will always count as passed)</label>
+          <label class="checkbox-row checkbox-row-standalone"><input type="checkbox" id="input-keep-going-after-buzzer"> Keep scoring after time runs out (timer keeps counting instead of ending the run)</label>
+          <label class="checkbox-row checkbox-row-standalone"><input type="checkbox" id="input-interactive-scoring" checked> Interactive mode for scoring runs (step-by-step mission prompts; off just shows the timer, then the overview to fill in scores)</label>
+          <label class="checkbox-row checkbox-row-standalone"><input type="checkbox" id="input-interactive-iterations"> Interactive mode for logging attachment iterations (one step at a time, camera-first)</label>
+        </div>
 
-    <div class="section-row" style="margin-top:28px;">
-      <h2>Backup</h2>
-    </div>
-    <p class="empty-sub">If you're signed in, everything also lives in your team's shared cloud database — this manual export is a secondary backup on top of that, useful if you're not signed in or want an offline copy.</p>
-    <div class="btn-group">
-      <button class="btn btn-ghost" id="btn-export-backup">Export full backup (.json)</button>
-      <button class="btn btn-ghost" id="btn-import-backup">Restore from backup file</button>
-    </div>
-    <button class="btn btn-danger btn-full" id="btn-reset-db" style="margin-top:8px;">Reset local data</button>
-    <p class="empty-sub">Use this if the app is stuck (e.g. a database error). This erases all local storage — but as long as you're signed in, you're fine. If not, save a backup first.</p>
+        <div id="settings-section-account" class="settings-section" hidden>
+          <div class="section-row">
+            <h2>Team Sync</h2>
+          </div>
+          <p class="empty-sub">Signing in connects this device to your team's shared cloud database — it's used both as a backup and to let the whole team see each other's attachments, iterations, and runs, not just what's on this one device. No extra setup needed beyond signing in.</p>
+          <p class="empty-sub" id="google-signin-status">Not signed in.</p>
+          <button class="btn btn-primary" id="btn-google-signin">Sign in with Google</button>
+          <button class="btn btn-ghost" id="btn-google-signout" hidden>Sign out</button>
+          <p class="empty-sub" id="drive-sync-status" hidden>Not synced yet.</p>
 
-    <div class="section-row" style="margin-top:28px;">
-      <h2>App Settings</h2>
-    </div>
-    <p class="empty-sub">Controls how practice game runs are scored and timed, and how attachment iterations get logged.</p>
-    <label class="checkbox-row checkbox-row-standalone"><input type="checkbox" id="input-skip-equipment-inspection" checked> Don't ask about the Equipment Inspection bonus before each run (it will always count as passed)</label>
-    <label class="checkbox-row checkbox-row-standalone"><input type="checkbox" id="input-keep-going-after-buzzer"> Keep scoring after time runs out (timer keeps counting instead of ending the run)</label>
-    <label class="checkbox-row checkbox-row-standalone"><input type="checkbox" id="input-interactive-scoring" checked> Interactive mode for scoring runs (step-by-step mission prompts; off just shows the timer, then the overview to fill in scores)</label>
-    <label class="checkbox-row checkbox-row-standalone"><input type="checkbox" id="input-interactive-iterations"> Interactive mode for logging attachment iterations (one step at a time, camera-first)</label>
+          <div class="section-row" style="margin-top:28px;">
+            <h2>Recently Deleted</h2>
+          </div>
+          <p class="empty-sub">Deleting anything — attachments, log entries, runs, missions, tasks, or game runs — moves it here instead of erasing it right away. Restore it any time within 30 days; after that it's purged for good.</p>
+          <button class="btn btn-ghost btn-full" id="btn-recently-deleted">View Recently Deleted</button>
 
-    <div class="section-row" style="margin-top:28px;">
-      <h2>Team Sync</h2>
-    </div>
-    <p class="empty-sub">Signing in connects this device to your team's shared cloud database — it's used both as a backup and to let the whole team see each other's attachments, iterations, and runs, not just what's on this one device. No extra setup needed beyond signing in.</p>
-    <p class="empty-sub" id="google-signin-status">Not signed in.</p>
-    <button class="btn btn-primary" id="btn-google-signin">Sign in with Google</button>
-    <button class="btn btn-ghost" id="btn-google-signout" hidden>Sign out</button>
-    <p class="empty-sub" id="drive-sync-status" hidden>Not synced yet.</p>
+          <div class="section-row" style="margin-top:28px;">
+            <h2>Backup</h2>
+          </div>
+          <p class="empty-sub">If you're signed in, everything also lives in your team's shared cloud database — this manual export is a secondary backup on top of that, useful if you're not signed in or want an offline copy.</p>
+          <div class="btn-group">
+            <button class="btn btn-ghost" id="btn-export-backup">Export full backup (.json)</button>
+            <button class="btn btn-ghost" id="btn-import-backup">Restore from backup file</button>
+          </div>
+          <button class="btn btn-danger btn-full" id="btn-reset-db" style="margin-top:8px;">Reset local data</button>
+          <p class="empty-sub">Use this if the app is stuck (e.g. a database error). This erases all local storage — but as long as you're signed in, you're fine. If not, save a backup first.</p>
 
-    <div id="admin-sheets-section" hidden>
-      <div class="section-row" style="margin-top:28px;">
-        <h2>Google Sheets Export</h2>
+          <div id="admin-sheets-section" hidden>
+            <div class="section-row" style="margin-top:28px;">
+              <h2>Google Sheets Export</h2>
+            </div>
+            <p class="empty-sub">Admin only. Exports everything in the app into a Google Sheet with three tabs: Time Data, Score Data, and Analysis charts — for more flexibility than fits on a phone screen.</p>
+            <p class="empty-sub" id="sheets-connect-status">Not connected.</p>
+            <button class="btn btn-primary" id="btn-sheets-connect">Connect Google Sheets</button>
+            <p class="empty-sub" id="sheets-file-status" hidden></p>
+            <button class="btn btn-amber btn-full" id="btn-sheets-export" style="margin-top:10px;" hidden>Export to Sheets</button>
+            <p class="empty-sub" id="sheets-export-status"></p>
+          </div>
+        </div>
       </div>
-      <p class="empty-sub">Admin only. Exports everything in the app into a Google Sheet with three tabs: Time Data, Score Data, and Analysis charts — for more flexibility than fits on a phone screen.</p>
-      <p class="empty-sub" id="sheets-connect-status">Not connected.</p>
-      <button class="btn btn-primary" id="btn-sheets-connect">Connect Google Sheets</button>
-      <p class="empty-sub" id="sheets-file-status" hidden></p>
-      <button class="btn btn-amber btn-full" id="btn-sheets-export" style="margin-top:10px;" hidden>Export to Sheets</button>
-      <p class="empty-sub" id="sheets-export-status"></p>
     </div>
   </section>
 

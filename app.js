@@ -269,7 +269,24 @@ document.querySelectorAll(".tab-btn").forEach((btn) => {
   });
 });
 
+document.querySelectorAll(".settings-sidebar-btn").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll(".settings-sidebar-btn").forEach((b) => b.classList.remove("active"));
+    document.querySelectorAll(".settings-section").forEach((s) => (s.hidden = true));
+    btn.classList.add("active");
+    document.getElementById(`settings-section-${btn.dataset.settingsSection}`).hidden = false;
+  });
+});
+
 // ---------- Utility ----------
+// Old entries have a single entry.photo string; new ones store entry.photos
+// (an array, since an iteration can now have multiple pictures) — this
+// normalizes either shape into a plain array everywhere photos are read.
+function getEntryPhotos(entry) {
+  if (Array.isArray(entry.photos)) return entry.photos.filter(Boolean);
+  if (entry.photo) return [entry.photo];
+  return [];
+}
 function esc(str) {
   return String(str ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
@@ -380,8 +397,34 @@ async function loadAttachments() {
   await renderEntryList();
 }
 async function renumberAttachments() {
-  const remaining = (await dbGetAll("attachments")).filter((a) => !a.deleted).sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+  const remaining = (await dbGetAll("attachments")).filter((a) => !a.deleted && !a.isBaseRobot).sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
   for (const [i, a] of remaining.entries()) { a.order = i; a.number = i + 1; await dbPut("attachments", a); }
+}
+// Base Robot is a system-created attachment that always exists and can't be
+// deleted — it's still stored in the same "attachments" store (so it can be
+// picked when logging an iteration, filtered, etc.) but is excluded from
+// the numbered/reorderable list and its iteration count is tracked
+// separately from the main attachments total.
+async function ensureBaseRobotExists() {
+  const all = await dbGetAll("attachments");
+  const existing = all.find((a) => a.isBaseRobot && !a.deleted);
+  if (existing) return;
+  const softDeleted = all.find((a) => a.isBaseRobot);
+  if (softDeleted) {
+    delete softDeleted.deleted;
+    delete softDeleted.deletedAt;
+    await dbPut("attachments", softDeleted);
+    return;
+  }
+  await dbPut("attachments", {
+    id: crypto.randomUUID(),
+    order: -1,
+    number: 0,
+    name: "Base Robot",
+    photo: null,
+    isBaseRobot: true,
+    createdAt: Date.now(),
+  });
 }
 async function restoreDeletedAttachment(id) {
   const att = await dbGet("attachments", id);
@@ -409,9 +452,14 @@ async function iterationCount(attachmentId) {
 }
 
 async function renderIterationTotal() {
+  const baseRobot = state.attachments.find((a) => a.isBaseRobot);
   const all = (await dbGetAll("entries")).filter((e) => !e.deleted);
+  const baseRobotCount = baseRobot ? all.filter((e) => e.attachmentId === baseRobot.id).length : 0;
+  const mainCount = all.length - baseRobotCount;
   const line = document.getElementById("iteration-total-line");
-  line.textContent = all.length ? `${all.length} total engineering iteration${all.length === 1 ? "" : "s"} logged` : "";
+  line.textContent = mainCount ? `${mainCount} total engineering iteration${mainCount === 1 ? "" : "s"} logged` : "";
+  const baseLine = document.getElementById("base-robot-iteration-total-line");
+  if (baseLine) baseLine.textContent = baseRobotCount ? `${baseRobotCount} base robot iteration${baseRobotCount === 1 ? "" : "s"} logged` : "";
 }
 
 function renderAttachmentChips() {
@@ -448,35 +496,82 @@ function renderAttachmentChips() {
 
 document.getElementById("sort-select").addEventListener("change", renderEntryList);
 
-function entryFieldHTML(label, text, uid) {
-  const SHOW_MORE_TRIGGER = 80; // roughly 2 lines of text at this font size/column width
-  const TRUNCATE_TO = 60; // roughly 1.5 lines — leaves room for "… Show more" on that same line
-  const truncatable = text.length > SHOW_MORE_TRIGGER;
-  const shortText = truncatable ? text.slice(0, TRUNCATE_TO).trimEnd() + "…" : text;
+function entryFieldHTML(label, text) {
   return `<div class="entry-field">
     <span class="entry-field-label">${esc(label)}</span>
-    <span class="entry-field-value" id="${uid}" data-full="${esc(text)}" data-short="${esc(shortText)}">${esc(truncatable ? shortText : text)}</span>
-    ${truncatable ? `<button type="button" class="entry-showmore-btn" data-target="${uid}">Show more</button>` : ""}
+    <span class="entry-field-value-clamped">${esc(text)}</span>
   </div>`;
 }
 function entryCardHTML(entry, attachmentLabel) {
   const sizeLabel = { small: "Small change", moderate: "Moderate change", major: "Major change" }[entry.size] || "";
-  const whatHTML = entry.whatChanged ? entryFieldHTML("What changed", entry.whatChanged, `efv-${entry.id}-what`) : "";
-  const whyHTML = entry.whyChanged ? entryFieldHTML("Why changed", entry.whyChanged, `efv-${entry.id}-why`) : "";
+  const whatHTML = entry.whatChanged ? entryFieldHTML("What changed", entry.whatChanged) : "";
+  const whyHTML = entry.whyChanged ? entryFieldHTML("Why changed", entry.whyChanged) : "";
+  const photos = getEntryPhotos(entry);
   return `
     <div class="entry-time">
       <span class="entry-time-text">${fmtDate(entry.timestamp)}
         ${attachmentLabel ? ` &middot; <span class="entry-att-tag">${esc(attachmentLabel)}</span>` : ""}
         ${sizeLabel ? ` &middot; <span class="size-badge size-${entry.size}">${esc(sizeLabel)}</span>` : ""}
       </span>
+      <button class="btn-icon entry-expand-btn" data-id="${entry.id}" title="View full">&#128470;&#65039;</button>
       <button class="btn-icon entry-del-btn" data-id="${entry.id}" title="Delete">&#128465;&#65039;</button>
     </div>
     <div class="entry-body-row">
-      ${entry.photo ? `<img src="${entry.photo}" alt="">` : ""}
+      ${photos.length ? `<div class="entry-thumb-wrap"><img src="${photos[0]}" alt="">${photos.length > 1 ? `<span class="entry-thumb-count">+${photos.length - 1}</span>` : ""}</div>` : ""}
       <div class="entry-fields">
         ${whatHTML}${whyHTML}
       </div>
     </div>`;
+}
+
+// ---- Full-detail iteration view: full-res image(s) + arrows + full text ----
+function openEntryDetailView(entry, att) {
+  state.entryDetail = { entry, att, photoIdx: 0 };
+  renderEntryDetailView();
+}
+function renderEntryDetailView() {
+  const { entry, att, photoIdx } = state.entryDetail;
+  const photos = getEntryPhotos(entry);
+  const sizeLabel = { small: "Small change", moderate: "Moderate change", major: "Major change" }[entry.size] || "";
+  openGuidedFullscreen(`
+    <div class="gfs-header">
+      <div class="gfs-header-top">
+        <button type="button" class="gfs-back-btn" id="entry-detail-back">&#8592;</button>
+        <div class="guided-phase-badge">${att ? esc(att.name) : "Iteration"}</div>
+      </div>
+      <h2 class="gfs-mission-name">${fmtDate(entry.timestamp)}</h2>
+    </div>
+    <div class="gfs-body" style="overflow-y:auto;">
+      ${photos.length ? `
+        <div class="entry-detail-image-wrap">
+          <img src="${photos[photoIdx]}" class="entry-detail-image">
+          ${photos.length > 1 ? `
+            <button type="button" class="entry-detail-arrow entry-detail-arrow-left" id="entry-detail-prev">&#8249;</button>
+            <button type="button" class="entry-detail-arrow entry-detail-arrow-right" id="entry-detail-next">&#8250;</button>
+            <div class="entry-detail-dots">${photos.map((_, i) => `<span class="entry-detail-dot${i === photoIdx ? " active" : ""}"></span>`).join("")}</div>
+          ` : ""}
+        </div>
+      ` : ""}
+      ${sizeLabel ? `<p class="empty-sub" style="text-align:center; margin-top:10px;"><span class="size-badge size-${entry.size}">${esc(sizeLabel)}</span></p>` : ""}
+      ${entry.whatChanged ? `<div class="gfs-section"><h3>What changed</h3><p>${esc(entry.whatChanged)}</p></div>` : ""}
+      ${entry.whyChanged ? `<div class="gfs-section"><h3>Why changed</h3><p>${esc(entry.whyChanged)}</p></div>` : ""}
+    </div>
+    <div class="gfs-footer">
+      <button type="button" class="btn btn-primary btn-full" id="entry-detail-close">Close</button>
+    </div>
+  `);
+  document.getElementById("entry-detail-back").addEventListener("click", closeGuidedFullscreen);
+  document.getElementById("entry-detail-close").addEventListener("click", closeGuidedFullscreen);
+  if (photos.length > 1) {
+    document.getElementById("entry-detail-prev").addEventListener("click", () => {
+      state.entryDetail.photoIdx = (photoIdx - 1 + photos.length) % photos.length;
+      renderEntryDetailView();
+    });
+    document.getElementById("entry-detail-next").addEventListener("click", () => {
+      state.entryDetail.photoIdx = (photoIdx + 1) % photos.length;
+      renderEntryDetailView();
+    });
+  }
 }
 
 async function renderEntryList() {
@@ -510,8 +605,8 @@ async function renderEntryList() {
     const att = attById[entry.attachmentId];
     const card = document.createElement("div");
     card.className = "entry-card";
-    card.innerHTML = entryCardHTML(entry, showTag ? (att ? `#${att.number} ${att.name}` : "deleted attachment") : null);
-    card.querySelector(".btn-icon").addEventListener("click", async () => {
+    card.innerHTML = entryCardHTML(entry, showTag ? (att ? (att.isBaseRobot ? att.name : `#${att.number} ${att.name}`) : "deleted attachment") : null);
+    card.querySelector(".entry-del-btn").addEventListener("click", async () => {
       if (!confirm("This removes the entry from the log. You can restore it any time from Settings → Recently Deleted.")) return;
       entry.deleted = true;
       entry.deletedAt = Date.now();
@@ -522,14 +617,7 @@ async function renderEntryList() {
       syncToTeamDrive();
       showUndoToast("Entry deleted.", () => restoreDeletedEntry(entry));
     });
-    card.querySelectorAll(".entry-showmore-btn").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        const target = document.getElementById(btn.dataset.target);
-        const expanded = target.textContent === target.dataset.full;
-        target.textContent = expanded ? target.dataset.short : target.dataset.full;
-        btn.textContent = expanded ? "Show more" : "Show less";
-      });
-    });
+    card.querySelector(".entry-expand-btn").addEventListener("click", () => openEntryDetailView(entry, att));
     list.appendChild(card);
   });
 }
@@ -539,15 +627,41 @@ document.getElementById("btn-record-iteration").addEventListener("click", () => 
 
 function renderAttachmentsSetup() {
   const list = document.getElementById("attachment-setup-list");
+  const baseRobotContainer = document.getElementById("base-robot-row");
   const editing = state.editingAttachmentOrder;
   renderAttachmentOrderToolbar();
+
+  const baseRobot = state.attachments.find((a) => a.isBaseRobot);
+  const realAttachments = state.attachments.filter((a) => !a.isBaseRobot);
+
   (async () => {
+    // Base Robot: always present, can't be deleted, not part of the
+    // reorderable/numbered attachment list.
+    if (baseRobotContainer) {
+      baseRobotContainer.innerHTML = "";
+      if (baseRobot) {
+        const count = await iterationCount(baseRobot.id);
+        const row = document.createElement("div");
+        row.className = "mission-row";
+        row.innerHTML = `
+          ${baseRobot.photo ? `<img class="att-thumb" src="${baseRobot.photo}" alt="">` : ""}
+          <div class="m-info">
+            <div class="m-name">&#129302; ${esc(baseRobot.name)}</div>
+            <div class="m-sub">${count} iteration${count === 1 ? "" : "s"} logged &middot; tracked separately</div>
+          </div>
+          <button class="btn-icon" data-act="edit" title="Edit photo">&#9998;&#65039;</button>
+        `;
+        row.querySelector('[data-act="edit"]').addEventListener("click", () => openAttachmentModal(baseRobot));
+        baseRobotContainer.appendChild(row);
+      }
+    }
+
     list.innerHTML = "";
-    if (!state.attachments.length) {
+    if (!realAttachments.length) {
       list.innerHTML = `<p class="empty-sub">No attachments yet.${editing ? "" : " Tap Edit to add one."}</p>`;
       return;
     }
-    for (const [idx, att] of state.attachments.entries()) {
+    for (const [idx, att] of realAttachments.entries()) {
       const row = document.createElement("div");
       row.dataset.idx = idx;
       row.dataset.attId = String(att.id);
@@ -590,7 +704,7 @@ function renderAttachmentsSetup() {
         list.appendChild(row);
       }
     }
-    if (editing && state.attachments.length) {
+    if (editing && realAttachments.length) {
       makeSortable(list, {
         onEnd: () => {
           [...list.querySelectorAll(".drag-num")].forEach((el, i) => { el.textContent = `#${i + 1}`; });
@@ -704,9 +818,27 @@ function openAttachmentModal(att) {
 }
 
 // ---- Record Iteration modal (attachment picker + size + what/why + photo + voice-to-text) ----
-let pendingPhoto = null;
+let pendingPhotos = [];
 let pendingSize = "small";
 let recognizer = null;
+
+function renderPhotoStrip(wrapId, photos, onRemove) {
+  const wrap = document.getElementById(wrapId);
+  if (!wrap) return;
+  wrap.innerHTML = photos.map((src, i) => `
+    <div class="photo-strip-item">
+      <img class="photo-preview" src="${src}">
+      <button type="button" class="photo-strip-remove" data-idx="${i}" title="Remove">&#10005;</button>
+    </div>
+  `).join("");
+  wrap.querySelectorAll(".photo-strip-remove").forEach((btn) => {
+    btn.addEventListener("click", () => onRemove(Number(btn.dataset.idx)));
+  });
+}
+function removeClassicPhoto(idx) {
+  pendingPhotos.splice(idx, 1);
+  renderPhotoStrip("photo-preview-wrap", pendingPhotos, removeClassicPhoto);
+}
 
 function openRecordIterationModal() {
   if (!state.attachments.length) {
@@ -720,7 +852,7 @@ function openRecordIterationModal() {
 }
 
 function openRecordIterationModalClassic() {
-  pendingPhoto = null;
+  pendingPhotos = [];
   pendingSize = "small";
   const defaultAttId = state.selectedAttachmentIds.size === 1 ? [...state.selectedAttachmentIds][0] : state.attachments[0].id;
   const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -728,7 +860,7 @@ function openRecordIterationModalClassic() {
     <h2>Record Iteration</h2>
     <div class="field"><label>Attachment</label>
       <select class="text-input" id="ri-attachment">
-        ${state.attachments.map((a) => `<option value="${a.id}" ${a.id === defaultAttId ? "selected" : ""}>#${esc(a.number)} ${esc(a.name)}</option>`).join("")}
+        ${state.attachments.map((a) => `<option value="${a.id}" ${a.id === defaultAttId ? "selected" : ""}>${a.isBaseRobot ? "" : `#${esc(a.number)} `}${esc(a.name)}</option>`).join("")}
       </select>
     </div>
     <div class="field"><label>Size of this iteration</label>
@@ -739,8 +871,8 @@ function openRecordIterationModalClassic() {
       </div>
     </div>
     <div class="field">
-      <label>Photo</label>
-      <div class="photo-preview-wrap" id="photo-preview-wrap"></div>
+      <label>Photos (optional, add as many as you want)</label>
+      <div class="photo-strip" id="photo-preview-wrap"></div>
       <div class="camera-view" id="camera-view" hidden>
         <video id="camera-video" autoplay playsinline muted></video>
         <div class="camera-controls">
@@ -752,7 +884,7 @@ function openRecordIterationModalClassic() {
         <button type="button" class="btn btn-amber" id="btn-take-photo">&#128247; Take Photo</button>
         <button type="button" class="btn btn-ghost" id="btn-choose-photo">Choose from files</button>
       </div>
-      <input type="file" accept="image/*" id="ri-photo" hidden>
+      <input type="file" accept="image/*" id="ri-photo" multiple hidden>
     </div>
     <div class="field">
       <label>What changed?</label>
@@ -782,14 +914,20 @@ function openRecordIterationModalClassic() {
 
   document.getElementById("btn-choose-photo").addEventListener("click", () => document.getElementById("ri-photo").click());
   document.getElementById("ri-photo").addEventListener("change", async (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-    pendingPhoto = await resizeImageToDataURL(file, 900, 0.72);
-    document.getElementById("photo-preview-wrap").innerHTML = `<img class="photo-preview" src="${pendingPhoto}">`;
+    const files = [...e.target.files];
+    e.target.value = "";
+    if (!files.length) return;
+    for (const file of files) {
+      pendingPhotos.push(await resizeImageToDataURL(file, 900, 0.72));
+    }
+    renderPhotoStrip("photo-preview-wrap", pendingPhotos, removeClassicPhoto);
   });
 
   const riCameraIds = { view: "camera-view", video: "camera-video", btnGroup: "photo-btn-group", previewWrap: "photo-preview-wrap" };
-  document.getElementById("btn-take-photo").addEventListener("click", () => openCamera(riCameraIds, (dataUrl) => { pendingPhoto = dataUrl; }));
+  document.getElementById("btn-take-photo").addEventListener("click", () => openCamera(riCameraIds, (dataUrl) => {
+    pendingPhotos.push(dataUrl);
+    renderPhotoStrip("photo-preview-wrap", pendingPhotos, removeClassicPhoto);
+  }));
   document.getElementById("camera-cancel").addEventListener("click", () => stopCamera());
   document.getElementById("camera-capture").addEventListener("click", () => capturePhoto());
 
@@ -804,8 +942,8 @@ function openRecordIterationModalClassic() {
     const attachmentId = document.getElementById("ri-attachment").value;
     const whatChanged = document.getElementById("ri-what").value.trim();
     const whyChanged = document.getElementById("ri-why").value.trim();
-    if (!whatChanged && !whyChanged && !pendingPhoto) { alert("Add a photo or a note first."); return; }
-    await dbPut("entries", { id: crypto.randomUUID(), attachmentId, timestamp: Date.now(), photo: pendingPhoto, whatChanged, whyChanged, size: pendingSize });
+    if (!whatChanged && !whyChanged && !pendingPhotos.length) { alert("Add a photo or a note first."); return; }
+    await dbPut("entries", { id: crypto.randomUUID(), attachmentId, timestamp: Date.now(), photos: pendingPhotos, whatChanged, whyChanged, size: pendingSize });
     state.selectedAttachmentIds.add(attachmentId);
     closeModal();
     renderAttachmentChips();
@@ -823,7 +961,7 @@ function startInteractiveIterationFlow() {
     step: 0,
     attachmentId: null,
     size: null,
-    photo: null,
+    photos: [],
     what: "",
     why: "",
   };
@@ -867,7 +1005,7 @@ function renderIterAttachmentStep() {
     ${iterHeaderHTML("Which attachment?")}
     <div class="gfs-body gfs-center">
       <div class="iter-attachment-grid">
-        ${state.attachments.map((a) => `<button type="button" class="iter-attachment-btn${a.id === state.iterFlow.attachmentId ? " active" : ""}" data-id="${a.id}">#${esc(a.number)} ${esc(a.name)}</button>`).join("")}
+        ${state.attachments.map((a) => `<button type="button" class="iter-attachment-btn${a.id === state.iterFlow.attachmentId ? " active" : ""}" data-id="${a.id}">${a.isBaseRobot ? "" : `#${esc(a.number)} `}${esc(a.name)}</button>`).join("")}
       </div>
     </div>
     <div class="gfs-footer"></div>
@@ -924,47 +1062,50 @@ function iterCapturePhoto() {
   const canvas = document.createElement("canvas");
   canvas.width = width; canvas.height = height;
   canvas.getContext("2d").drawImage(video, 0, 0, width, height);
-  state.iterFlow.photo = canvas.toDataURL("image/jpeg", 0.72);
+  state.iterFlow.photos.push(canvas.toDataURL("image/jpeg", 0.72));
   iterStopCameraStream();
   renderIterPhotoStep(); // switch straight into the review/preview screen
 }
-function renderIterPhotoStep() {
-  const hasPhoto = !!state.iterFlow.photo;
+function renderIterPhotoStep(forceCamera = false) {
+  const photos = state.iterFlow.photos;
+  const hasPhotos = photos.length > 0 && !forceCamera;
   openGuidedFullscreen(`
-    ${iterHeaderHTML(hasPhoto ? "Review photo" : "Take a photo")}
+    ${iterHeaderHTML(hasPhotos ? "Review photos" : "Take a photo")}
     <div class="gfs-body gfs-center">
-      ${hasPhoto ? `
-        <div class="iter-photo-preview-big"><img src="${state.iterFlow.photo}"></div>
-        <button type="button" class="btn btn-ghost btn-full" id="iter-retake-btn" style="margin-top:14px;">&#8635; Retake</button>
+      ${hasPhotos ? `
+        <div class="photo-strip" id="iter-photo-strip"></div>
+        <button type="button" class="btn btn-ghost btn-full" id="iter-add-another-btn" style="margin-top:14px;">&#43; Add another photo</button>
       ` : `
         <div class="camera-view" id="iter-camera-view"><video id="iter-camera-video" autoplay playsinline muted></video></div>
         <div class="iter-shutter-row">
-          <button type="button" class="iter-upload-btn" id="iter-upload-btn" title="Upload a photo instead">&#128193;</button>
+          <button type="button" class="iter-upload-btn" id="iter-upload-btn" title="Upload photos instead">&#128193;</button>
           <button type="button" class="iter-shutter-btn" id="iter-shutter-btn" title="Capture"></button>
           <span class="iter-shutter-spacer"></span>
         </div>
-        <input type="file" accept="image/*" id="iter-photo-file" hidden>
+        <input type="file" accept="image/*" id="iter-photo-file" multiple hidden>
       `}
     </div>
     <div class="gfs-footer">
-      <button type="button" class="btn btn-primary btn-full" id="iter-photo-next">${hasPhoto ? "Next" : "Skip photo"}</button>
+      <button type="button" class="btn btn-primary btn-full" id="iter-photo-next">${hasPhotos ? "Next" : "Skip photo"}</button>
     </div>
   `);
   wireIterNav();
-  if (hasPhoto) {
-    document.getElementById("iter-retake-btn").addEventListener("click", () => {
-      state.iterFlow.photo = null;
-      renderIterPhotoStep(); // back to the camera
+  if (hasPhotos) {
+    renderPhotoStrip("iter-photo-strip", photos, (idx) => {
+      photos.splice(idx, 1);
+      renderIterPhotoStep();
     });
+    document.getElementById("iter-add-another-btn").addEventListener("click", () => renderIterPhotoStep(true));
   } else {
     iterStartCamera(); // camera opens immediately — this step is camera-first, not a choice screen
     document.getElementById("iter-shutter-btn").addEventListener("click", iterCapturePhoto);
     document.getElementById("iter-upload-btn").addEventListener("click", () => document.getElementById("iter-photo-file").click());
     document.getElementById("iter-photo-file").addEventListener("change", async (e) => {
-      const file = e.target.files[0];
-      if (!file) return;
+      const files = [...e.target.files];
+      e.target.value = "";
+      if (!files.length) return;
       iterStopCameraStream();
-      state.iterFlow.photo = await resizeImageToDataURL(file, 900, 0.72);
+      for (const file of files) state.iterFlow.photos.push(await resizeImageToDataURL(file, 900, 0.72));
       renderIterPhotoStep(); // switch straight into the review/preview screen
     });
   }
@@ -1017,9 +1158,9 @@ function renderIterWhyStep() {
   document.getElementById("iter-save").addEventListener("click", async () => {
     stopRecognizer();
     state.iterFlow.why = document.getElementById("iter-why").value.trim();
-    const { attachmentId, size, photo, what, why } = state.iterFlow;
-    if (!what && !why && !photo) { alert("Add a photo or a note first."); return; }
-    await dbPut("entries", { id: crypto.randomUUID(), attachmentId, timestamp: Date.now(), photo, whatChanged: what, whyChanged: why, size });
+    const { attachmentId, size, photos, what, why } = state.iterFlow;
+    if (!what && !why && !photos.length) { alert("Add a photo or a note first."); return; }
+    await dbPut("entries", { id: crypto.randomUUID(), attachmentId, timestamp: Date.now(), photos, whatChanged: what, whyChanged: why, size });
     state.selectedAttachmentIds.add(attachmentId);
     state.iterFlow = null;
     closeGuidedFullscreen();
@@ -2549,13 +2690,17 @@ async function openRecentlyDeletedModal() {
     section.innerHTML = `<h3>${esc(title)}</h3>`;
     const list = document.createElement("div");
     list.className = "mission-list";
+    const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
     items.forEach((item) => {
+      const deletedAt = deletedAtFn(item);
+      const daysLeft = Math.max(0, Math.ceil((deletedAt + THIRTY_DAYS_MS - Date.now()) / (24 * 60 * 60 * 1000)));
+      const daysLeftText = daysLeft === 0 ? "Less than a day left" : `${daysLeft} day${daysLeft === 1 ? "" : "s"} left`;
       const row = document.createElement("div");
       row.className = "mission-row";
       row.innerHTML = `
         <div class="m-info">
           <div class="m-name">${esc(nameFn(item))}</div>
-          <div class="m-sub">Deleted ${new Date(deletedAtFn(item)).toLocaleString()}</div>
+          <div class="m-sub">${daysLeftText}</div>
         </div>
         <button class="btn btn-ghost">Restore</button>
       `;
@@ -2572,7 +2717,7 @@ async function openRecentlyDeletedModal() {
 
   addSection("Attachments", deletedAttachments, (a) => a.name, (a) => a.deletedAt, (a) => restoreDeletedAttachment(a.id));
   addSection("Log entries", deletedEntries, (e) => e.whatChanged || e.whyChanged || "Entry", (e) => e.deletedAt, (e) => restoreDeletedEntry(e));
-  addSection("Runs (leg groups)", deletedRunGroups, (g) => g.name, (g) => g.deletedAt, (g) => restoreDeletedRunGroup(g.id));
+  addSection("Runs", deletedRunGroups, (g) => g.name, (g) => g.deletedAt, (g) => restoreDeletedRunGroup(g.id));
   addSection("Missions", deletedMissions, (m) => m.name, (m) => m.deletedAt, (m) => restoreDeletedMission(m.id));
   addSection("Tasks", deletedTasks, ({ mission, task }) => `${task.name} (in ${mission.name})`, ({ task }) => task.deletedAt, ({ mission, task }) => restoreDeletedTask(mission.id, task.id));
   addSection("Game runs", deletedRuns, (r) => r.label, (r) => r.deletedAt, (r) => restoreDeletedRun(r.id));
@@ -3736,6 +3881,20 @@ async function writeScoreDataSheet(spreadsheetId, sheetId) {
   const firstFlagCol = 7; // 1-indexed, column G — matches the XLSX export's own layout
   const lastFlagCol = firstFlagCol + Math.max(completedRuns.length, 1) - 1;
   const successCol = lastFlagCol + 1;
+
+  // Clear any conditional formatting rules already on this sheet before
+  // adding fresh ones — otherwise repeated exports pile up overlapping (and
+  // possibly stale/conflicting, from earlier iterations) rules instead of
+  // cleanly replacing them.
+  const meta = await sheetsFetch(spreadsheetId);
+  const sheetMeta = meta.sheets.find((s) => s.properties.sheetId === sheetId);
+  const existingRuleCount = (sheetMeta && sheetMeta.conditionalFormats || []).length;
+  if (existingRuleCount > 0) {
+    await sheetsBatchUpdate(spreadsheetId, Array.from({ length: existingRuleCount }, () => ({
+      deleteConditionalFormatRule: { sheetId, index: 0 },
+    })));
+  }
+
   const header = ["M#", "Official Name", "Task", "Pts", "Name", "#", ...completedRuns.map(() => ""), "Success Rate"];
   const dataRows = rowDefs.map((row, i) => {
     const rowNum = i + 2;
@@ -3783,7 +3942,7 @@ async function writeScoreDataSheet(spreadsheetId, sheetId) {
     } },
     { addConditionalFormatRule: {
         rule: {
-          ranges: [{ sheetId, startRowIndex: 1, endRowIndex: lastTaskRow, startColumnIndex: 0, endColumnIndex: successCol }],
+          ranges: [{ sheetId, startRowIndex: 1, endRowIndex: lastTaskRow, startColumnIndex: 0, endColumnIndex: successCol - 1 }],
           booleanRule: {
             condition: { type: "CUSTOM_FORMULA", values: [{ userEnteredValue: "=ISODD($F2)" }] },
             format: { backgroundColor: { red: 0.812, green: 0.886, blue: 0.953 } },
@@ -3847,23 +4006,26 @@ async function writeScoreDataSheet(spreadsheetId, sheetId) {
 async function writeAnalysisSheet(spreadsheetId, sheetId) {
   const completed = state.runs.filter((r) => !r.inProgress).sort((a, b) => (a.startedAt || 0) - (b.startedAt || 0));
   const trendRows = completed.map((r) => [r.label, runTotal(r, state.missions)]);
+  const runTimeRows = completed.map((r) => [r.label, r.totalTimeMs != null ? Math.round(r.totalTimeMs / 1000) : ""]);
   const missionData = computeMissionAnalytics().sort((a, b) => a.order - b.order);
   const missionRows = missionData.map((d) => [
     d.mission.name,
-    d.successRate != null ? Math.round(d.successRate * 100) : "",
     d.pointsPerSec != null ? Number(d.pointsPerSec.toFixed(2)) : "",
-    d.avgTimeMs != null ? Math.round(d.avgTimeMs / 1000) : "",
   ]);
   await sheetsValuesUpdate(spreadsheetId, `'Analysis'!A1`, [
     ["Run", "Score"], ...trendRows,
   ]);
-  const missionStartRow = trendRows.length + 3; // leave a gap below the trend table
+  const runTimeStartRow = trendRows.length + 3;
+  await sheetsValuesUpdate(spreadsheetId, `'Analysis'!A${runTimeStartRow}`, [
+    ["Run", "Total Time (sec)"], ...runTimeRows,
+  ]);
+  const missionStartRow = runTimeStartRow + runTimeRows.length + 2;
   await sheetsValuesUpdate(spreadsheetId, `'Analysis'!A${missionStartRow}`, [
-    ["Mission", "Success Rate (%)", "Points/Sec", "Avg Time (sec)"], ...missionRows,
+    ["Mission", "Points/Sec"], ...missionRows,
   ]);
 
   const trendLastRow = trendRows.length + 1;
-  const missionLastRow = missionStartRow + missionRows.length - 1;
+  const runTimeLastRow = runTimeStartRow + runTimeRows.length - 1;
   await sheetsBatchUpdate(spreadsheetId, [
     { addChart: { chart: { spec: {
       title: "Score Trend", basicChart: {
@@ -3875,23 +4037,14 @@ async function writeAnalysisSheet(spreadsheetId, sheetId) {
       },
     }, position: { overlayPosition: { anchorCell: { sheetId, rowIndex: 0, columnIndex: 3 } } } } } },
     { addChart: { chart: { spec: {
-      title: "Mission Success Rate", basicChart: {
-        chartType: "COLUMN",
+      title: "Total Run Time per Game Run", basicChart: {
+        chartType: "LINE",
         legendPosition: "NO_LEGEND",
-        axis: [{ position: "BOTTOM_AXIS", title: "Mission" }, { position: "LEFT_AXIS", title: "Success %" }],
-        domains: [{ domain: { sourceRange: { sources: [{ sheetId, startRowIndex: missionStartRow, endRowIndex: missionLastRow, startColumnIndex: 0, endColumnIndex: 1 }] } } }],
-        series: [{ series: { sourceRange: { sources: [{ sheetId, startRowIndex: missionStartRow, endRowIndex: missionLastRow, startColumnIndex: 1, endColumnIndex: 2 }] } } }],
+        axis: [{ position: "BOTTOM_AXIS", title: "Run" }, { position: "LEFT_AXIS", title: "Total Time (sec)" }],
+        domains: [{ domain: { sourceRange: { sources: [{ sheetId, startRowIndex: runTimeStartRow, endRowIndex: runTimeLastRow, startColumnIndex: 0, endColumnIndex: 1 }] } } }],
+        series: [{ series: { sourceRange: { sources: [{ sheetId, startRowIndex: runTimeStartRow, endRowIndex: runTimeLastRow, startColumnIndex: 1, endColumnIndex: 2 }] } } }],
       },
     }, position: { overlayPosition: { anchorCell: { sheetId, rowIndex: 20, columnIndex: 3 } } } } } },
-    { addChart: { chart: { spec: {
-      title: "Points per Second by Mission", basicChart: {
-        chartType: "COLUMN",
-        legendPosition: "NO_LEGEND",
-        axis: [{ position: "BOTTOM_AXIS", title: "Mission" }, { position: "LEFT_AXIS", title: "Pts/sec" }],
-        domains: [{ domain: { sourceRange: { sources: [{ sheetId, startRowIndex: missionStartRow, endRowIndex: missionLastRow, startColumnIndex: 0, endColumnIndex: 1 }] } } }],
-        series: [{ series: { sourceRange: { sources: [{ sheetId, startRowIndex: missionStartRow, endRowIndex: missionLastRow, startColumnIndex: 2, endColumnIndex: 3 }] } } }],
-      },
-    }, position: { overlayPosition: { anchorCell: { sheetId, rowIndex: 40, columnIndex: 3 } } } } } },
   ]);
 }
 
@@ -4080,6 +4233,7 @@ async function initAll() {
   preloadAllSounds(); // fire-and-forget, decoding well ahead of any run starting
   initFirebaseAuth(); // fire-and-forget, waits for the Firebase module script if needed
   await purgeOldTrash();
+  await ensureBaseRobotExists();
   await loadAttachments();
   await loadMissions();
   await loadRunGroups();
