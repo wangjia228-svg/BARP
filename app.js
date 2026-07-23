@@ -4174,21 +4174,8 @@ async function writeAnalysisSheet(spreadsheetId, sheetId) {
   const missionDataEnd = missionDataStart + missionRows.length;
   await sheetsValuesUpdate(spreadsheetId, `'Analysis'!A${missionHeaderRow + 1}`, [["Mission", "Points/Sec"], ...missionRows]);
 
-  // Success Rate values colored red→yellow→green by how good the run was —
-  // same 0/50/100% scale already used on the Score Data sheet — plus percent
-  // formatting, and auto-fit columns so none of these tables' text overflows.
+  // Percent formatting only — no coloring, per your preference.
   await sheetsBatchUpdate(spreadsheetId, [
-    { addConditionalFormatRule: {
-        rule: {
-          ranges: [{ sheetId, startRowIndex: successDataStart, endRowIndex: successDataEnd, startColumnIndex: 1, endColumnIndex: 2 }],
-          gradientRule: {
-            minpoint: { type: "NUMBER", value: "0", color: { red: 1, green: 0, blue: 0 } },
-            midpoint: { type: "NUMBER", value: "0.5", color: { red: 1, green: 1, blue: 0 } },
-            maxpoint: { type: "NUMBER", value: "1", color: { red: 0.341, green: 0.745, blue: 0.541 } },
-          },
-        },
-        index: 0,
-    } },
     { repeatCell: {
         range: { sheetId, startRowIndex: successDataStart, endRowIndex: successDataEnd, startColumnIndex: 1, endColumnIndex: 2 },
         cell: { userEnteredFormat: { numberFormat: { type: "PERCENT", pattern: "0%" } } },
@@ -4202,55 +4189,9 @@ async function writeAnalysisSheet(spreadsheetId, sheetId) {
   // width (no auto-fit) rather than being resized to the data beneath them.
   const CHART_WIDTH = 360, CHART_HEIGHT = 250, CHART_GAP_COLS = 5;
 
-  // Sheets charts can't gradient-color bars by value the way conditional
-  // formatting colors cells, so the Success Rate chart fakes it: each run
-  // gets its own hidden helper column (blank except for that run's own row),
-  // and each column becomes a separate single-bar "series" with an explicit
-  // color computed from that run's rate. Nobody needs to read these columns
-  // directly — they exist purely to drive the chart — so they're hidden.
-  function successColor(rate) {
-    const r = rate === "" || rate == null ? 0.5 : Math.max(0, Math.min(1, rate));
-    const lerp = (a, b, t) => a + (b - a) * t;
-    return r <= 0.5
-      ? { red: 1, green: lerp(0, 1, r / 0.5), blue: 0 }
-      : { red: lerp(1, 0.341, (r - 0.5) / 0.5), green: lerp(1, 0.745, (r - 0.5) / 0.5), blue: lerp(0, 0.541, (r - 0.5) / 0.5) };
-  }
-  const n = successRows.length;
-  let successChartRequest = null;
-  if (n > 0) {
-    const helperStartCol = 2; // column C, 0-indexed
-    const helperMatrix = successRows.map((row, i) =>
-      Array.from({ length: n }, (_, j) => (i === j ? row[1] : ""))
-    );
-    await sheetsValuesUpdate(spreadsheetId, `'Analysis'!${colLetter(helperStartCol + 1)}${successDataStart + 1}`, helperMatrix);
-    await sheetsBatchUpdate(spreadsheetId, [
-      { updateDimensionProperties: {
-          range: { sheetId, dimension: "COLUMNS", startIndex: helperStartCol, endIndex: helperStartCol + n },
-          properties: { hiddenByUser: true }, fields: "hiddenByUser",
-      } },
-    ]);
-    successChartRequest = {
-      addChart: { chart: { spec: {
-        title: "Success Rate",
-        basicChart: {
-          chartType: "COLUMN",
-          legendPosition: "NO_LEGEND",
-          axis: [{ position: "BOTTOM_AXIS", title: "Run" }, { position: "LEFT_AXIS", title: "Success Rate" }],
-          domains: [{ domain: { sourceRange: { sources: [{ sheetId, startRowIndex: successDataStart, endRowIndex: successDataEnd, startColumnIndex: 0, endColumnIndex: 1 }] } } }],
-          series: successRows.map((row, i) => ({
-            series: { sourceRange: { sources: [{ sheetId, startRowIndex: successDataStart, endRowIndex: successDataEnd, startColumnIndex: helperStartCol + i, endColumnIndex: helperStartCol + i + 1 }] } },
-            color: successColor(row[1]),
-          })),
-        },
-      }, position: { overlayPosition: {
-        anchorCell: { sheetId, rowIndex: 0, columnIndex: CHART_GAP_COLS },
-        widthPixels: CHART_WIDTH, heightPixels: CHART_HEIGHT,
-      } } } },
-    };
-  }
-
   const charts = [
     { title: "Score Trend", axisTitle: "Score", dataStart: trendDataStart, dataEnd: trendDataEnd, col: 0, domainTitle: "Run" },
+    { title: "Success Rate", axisTitle: "Success Rate", dataStart: successDataStart, dataEnd: successDataEnd, col: CHART_GAP_COLS, domainTitle: "Run", chartType: "COLUMN" },
     { title: "Points/Sec by Mission", axisTitle: "Points/Sec", dataStart: missionDataStart, dataEnd: missionDataEnd, col: CHART_GAP_COLS * 2, domainTitle: "Mission", chartType: "COLUMN" },
   ];
   const chartRequests = charts.map((c) => ({
@@ -4268,7 +4209,6 @@ async function writeAnalysisSheet(spreadsheetId, sheetId) {
       widthPixels: CHART_WIDTH, heightPixels: CHART_HEIGHT,
     } } } },
   }));
-  if (successChartRequest) chartRequests.splice(1, 0, successChartRequest);
   await sheetsBatchUpdate(spreadsheetId, chartRequests);
 }
 
